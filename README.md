@@ -48,6 +48,39 @@ curl -X POST http://127.0.0.1:8000/v1/predict \
 Le `timestamp` doit porter un fuseau (`+02:00`, `Z`...) : sans fuseau, l'API répond 422.
 Les instants sont renvoyés et journalisés en UTC (`"target_timestamp": "2026-10-06T07:00:00Z"`).
 
+## Démarrer l'API et PostgreSQL avec Docker Compose
+
+Générez le modèle une fois avant de construire l'image (voir les commandes de démarrage ci-dessus), puis configurez le mot de passe local :
+
+```bash
+cp secrets/postgres_password.example secrets/postgres_password
+cp secrets/pgadmin_password.example secrets/pgadmin_password
+# Remplacez le contenu de secrets/postgres_password par un mot de passe local.
+# Remplacez aussi le contenu de secrets/pgadmin_password.
+chmod 600 secrets/postgres_password secrets/pgadmin_password
+docker compose up --build
+```
+
+L'API est disponible sur `http://localhost:8000/docs` et pgAdmin sur
+`http://localhost:5050` (email `admin@velov.com`, mot de passe dans
+`secrets/pgadmin_password`). Dans pgAdmin, ajoutez un serveur avec le nom
+`Vélo'v`, l'hôte `db`, le port `5432`, la base `velov`, l'utilisateur `velov` et le
+mot de passe contenu dans `secrets/postgres_password`.
+
+Les prédictions sont stockées dans la table PostgreSQL `predictions`; pour les consulter
+depuis le terminal :
+
+```bash
+docker compose exec db sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "SELECT id, station_id, observation_timestamp, target_timestamp, predicted_bikes, model_version FROM predictions ORDER BY id DESC;"'
+```
+
+Pour arrêter les services tout en conservant les données, exécutez `docker compose down`.
+Les paramètres sont lus depuis `.env` et le mot de passe depuis un fichier secret ignoré par git;
+ne commitez ni `.env`, ni `.env.local`, ni les fichiers sans suffixe `.example` dans `secrets/`.
+Sur un clone neuf, créez `.env` avec `POSTGRES_DB=velov`, `POSTGRES_USER=velov`,
+`API_PORT=8000` et `PGADMIN_PORT=5050`. Changez les identifiants d'exemple
+avant tout déploiement non local.
+
 ## Exigences du projet
 
 Le service doit respecter les exigences de [docs/exigences.md](docs/exigences.md), de S1 à S9.

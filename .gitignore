@@ -14,3 +14,7 @@ mlruns/
 
 # Secrets
 .env
+.env.local
+secrets/*
+!secrets/postgres_password.example
+!secrets/pgadmin_password.example

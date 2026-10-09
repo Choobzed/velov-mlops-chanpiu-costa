@@ -18,19 +18,29 @@ import json
 import logging
 import os
 from contextlib import asynccontextmanager
+from datetime import timedelta
 from pathlib import Path
+from typing import Any
 
 import joblib
-from fastapi import FastAPI
+import pandas as pd
+import psycopg
+from fastapi import FastAPI, HTTPException
 
-from velov.api.schemas import PredictionRequest, PredictionResponse  # noqa: F401
-from velov.features import FEATURES, add_features  # noqa: F401
+from velov.api.database import (
+    check_database_connection,
+    database_configured,
+    initialize_database,
+    save_prediction,
+)
+from velov.api.schemas import PredictionRequest, PredictionResponse
+from velov.features import FEATURES, add_features
 from velov.train import METADATA_FILENAME, sha256_of
 
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
 logger = logging.getLogger("velov.api")
 
-STATE: dict = {"model": None, "metadata": None}
+STATE: dict[str, Any] = {"model": None, "metadata": None}
 
 
 def load_model(model_dir: Path) -> tuple[object, dict]:
@@ -54,6 +64,11 @@ async def lifespan(app: FastAPI):
         logger.info("Modèle %s chargé", STATE["metadata"]["model_version"])
     except Exception:
         logger.exception("Échec du chargement du modèle depuis %s", model_dir)
+    if database_configured():
+        initialize_database()
+        logger.info("PostgreSQL initialisé")
+    else:
+        logger.info("PostgreSQL non configuré; les prédictions ne seront pas persistées")
     yield
     STATE.update(model=None, metadata=None)
 
@@ -61,16 +76,49 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="Vélo'v availability API", version="1.0.0", lifespan=lifespan)
 
 
-# TODO 5 [Should] : GET /health -> {"status": "ok"}
+@app.get("/health")
+def health() -> dict[str, str]:
+    return {"status": "ok"}
 
 
-# TODO 6 [Should] : GET /ready -> 200 + version du modèle si chargé, sinon HTTPException 503
+@app.get("/ready")
+def ready() -> dict[str, str]:
+    if STATE["model"] is None or STATE["metadata"] is None:
+        raise HTTPException(status_code=503, detail="Modèle indisponible")
+    if database_configured() and not check_database_connection():
+        raise HTTPException(status_code=503, detail="Base de données indisponible")
+    return {"status": "ready", "model_version": STATE["metadata"]["model_version"]}
 
 
-# TODO 7 [Must] : POST /v1/predict
-#   - entrée : PredictionRequest ; sortie : PredictionResponse
-#   - construire un DataFrame d'une ligne, appliquer add_features, sélectionner FEATURES
-#   - prédire, borner entre 0 et capacity, target_timestamp = timestamp + 1 h
-#     (l'instant porte son fuseau : le contrat l'a validé)
-#   - 503 si le modèle n'est pas chargé
-#   Question : pourquoi importer add_features plutôt que recalculer les features ici ?
+@app.post("/v1/predict", response_model=PredictionResponse)
+def predict(request: PredictionRequest) -> PredictionResponse:
+    return _predict(request)
+
+
+def _predict(request: PredictionRequest) -> PredictionResponse:
+    model = STATE["model"]
+    metadata = STATE["metadata"]
+    if model is None or metadata is None:
+        raise HTTPException(status_code=503, detail="Modèle indisponible")
+
+    frame = pd.DataFrame([request.model_dump()])
+    frame["timestamp"] = pd.to_datetime(frame["timestamp"], utc=True)
+    features = add_features(frame)[FEATURES]
+    raw_prediction = float(model.predict(features)[0])
+    prediction = min(max(raw_prediction, 0.0), float(request.capacity))
+    response = PredictionResponse(
+        station_id=request.station_id,
+        target_timestamp=request.timestamp + timedelta(hours=1),
+        predicted_bikes=prediction,
+        model_version=metadata["model_version"],
+    )
+
+    if database_configured():
+        try:
+            save_prediction(request, response)
+        except psycopg.Error as error:
+            logger.exception("Échec de l'enregistrement de la prédiction")
+            raise HTTPException(
+                status_code=503, detail="Enregistrement en base indisponible"
+            ) from error
+    return response
