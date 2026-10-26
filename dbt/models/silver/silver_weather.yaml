@@ -1,0 +1,20 @@
+version: 2
+
+models:
+  - name: silver_weather
+    description: "Mesures météo à Lyon (une ligne par mesure, toutes les 15 minutes environ)."
+    columns:
+      - name: observed_at
+        description: "Heure de la mesure (UTC)."
+        data_tests:
+          - not_null
+          - unique
+      - name: temperature
+        description: "Température à 2 m, en °C."
+        data_tests:
+          - not_null:
+              config:
+                warn_if: ">0"
+                error_if: ">10"
+      - name: is_raining
+        description: "Vrai si des précipitations ont été mesurées."

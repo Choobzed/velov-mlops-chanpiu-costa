@@ -9,3 +9,5 @@ sources:
         description: "Photos brutes du flux GBFS station_status, une ligne par (station, relevé)."
       - name: bronze_station_information
         description: "Fiches brutes des stations (flux station_information), une ligne par version de fiche."
+      - name: bronze_weather
+        description: "Météo brute à Lyon (Open-Meteo, mesure actuelle), une ligne par mesure."

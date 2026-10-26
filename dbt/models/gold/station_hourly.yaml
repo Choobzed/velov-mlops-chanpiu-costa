@@ -1,0 +1,42 @@
+version: 2
+
+models:
+  - name: station_hourly
+    description: >
+      Table d'entraînement : une ligne par station et par heure, avec les colonnes d'entrée
+      du modèle (velov.features.RAW_COLUMNS). Contrat imposé : si le modèle SQL ne produit pas
+      exactement ces colonnes et ces types, dbt refuse de construire la table (EX-12).
+    config:
+      contract:
+        enforced: true
+    columns:
+      - name: station_id
+        data_type: integer
+        description: "Identifiant de la station."
+        constraints:
+          - type: not_null
+      - name: timestamp
+        data_type: timestamp with time zone
+        description: "Heure pile (UTC) à laquelle l'état est observé ; seules les données antérieures sont utilisées."
+        constraints:
+          - type: not_null
+      - name: capacity
+        data_type: integer
+        description: "Nombre de bornes de la station."
+        constraints:
+          - type: not_null
+      - name: bikes_available
+        data_type: integer
+        description: "Vélos disponibles à cette heure."
+        constraints:
+          - type: not_null
+      - name: temperature
+        data_type: double
+        description: "Température à Lyon, en °C."
+        constraints:
+          - type: not_null
+      - name: is_raining
+        data_type: boolean
+        description: "Pluie à Lyon à cette heure."
+        constraints:
+          - type: not_null
