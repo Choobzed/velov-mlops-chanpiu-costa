@@ -118,6 +118,44 @@ Le script affiche le nombre de stations reçues et le nombre d'observations rée
 ajoutées. Lancé deux fois de suite, le second passage ajoute 0 ligne (ou presque) : seules
 les stations qui ont envoyé un nouveau relevé entre-temps sont ajoutées.
 
+Exemple réel :
+
+```
+INFO 466 stations reçues, 466 nouvelles observations ajoutées dans data/velov.duckdb
+INFO 466 stations reçues, 0 nouvelles observations ajoutées dans data/velov.duckdb
+```
+
+### Ce qui se passe à chaque exécution
+
+```
+1. Heure du passage      loaded_at = maintenant (UTC), une seule fois pour tout le passage
+        |
+2. Sommaire              GET gbfs.json  ->  liste des flux disponibles
+        |
+3. Adresse du flux       on y cherche l'url de "station_status"
+        |
+4. Données               GET station_status.json  ->  environ 466 stations
+        |
+5. Mise en forme         chaque station -> une ligne de la table (+ loaded_at)
+        |
+6. Base DuckDB           ouvre data/velov.duckdb (le crée s'il n'existe pas)
+                         crée la table bronze si elle n'existe pas
+                         insère les lignes ; une ligne déjà connue est ignorée
+        |
+7. Bilan                 "N stations reçues, M nouvelles observations ajoutées"
+```
+
+En résumé : le script fait deux requêtes HTTP vers le serveur de la Métropole de Lyon
+(l'équivalent de deux `curl`), transforme la réponse en lignes de tableau, et les **ajoute**
+dans la table `bronze_station_status`. Il ne modifie ni ne supprime jamais une ligne.
+
+### Construire l'historique
+
+Une exécution donne une seule "photo" de l'état des stations. Pour obtenir un historique,
+le script doit être relancé régulièrement (toutes les 5 minutes par exemple) par un
+planificateur, comme `cron` sur la VM. À chaque passage, seules les stations qui ont envoyé
+un nouveau relevé ajoutent une ligne : la table grossit petit à petit, sans doublon.
+
 ### Comment fonctionne le script (`src/velov/ingest.py`)
 
 1. **`fetch_json`** télécharge une adresse web et transforme la réponse JSON en

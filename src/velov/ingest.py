@@ -6,6 +6,9 @@ Le flux GBFS ne donne que l'état actuel des stations. Lancé régulièrement
 (toutes les 5 minutes), ce script construit l'historique dont le modèle a besoin.
 Il est idempotent : le relancer sur les mêmes données n'ajoute aucune ligne.
 
+Flux collectés : station_status (état des stations, en continu) et
+station_information (fiche des stations : nom, position, capacité).
+
 Usage :
     python -m velov.ingest
     python -m velov.ingest --db data/velov.duckdb
@@ -14,6 +17,7 @@ Usage :
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import logging
 import urllib.request
@@ -49,6 +53,29 @@ CREATE TABLE IF NOT EXISTS bronze_station_status (
 # c'est ce qui rend l'ingestion idempotente.
 INSERT_BRONZE = """
 INSERT INTO bronze_station_status VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT DO NOTHING
+"""
+
+# station_information : la fiche des stations (nom, position, capacité). Elle change rarement
+# et n'a pas d'heure de relevé par station. On garde donc une ligne par VERSION de fiche :
+# record_hash est l'empreinte du contenu, et la clé (station_id, record_hash) fait qu'une
+# fiche inchangée n'est jamais réinsérée. Si la capacité change, une nouvelle ligne apparaît.
+CREATE_BRONZE_INFORMATION = """
+CREATE TABLE IF NOT EXISTS bronze_station_information (
+    station_id   VARCHAR,
+    name         VARCHAR,
+    lat          DOUBLE,
+    lon          DOUBLE,
+    capacity     INTEGER,
+    raw          VARCHAR,
+    record_hash  VARCHAR,
+    loaded_at    TIMESTAMPTZ,
+    PRIMARY KEY (station_id, record_hash)
+)
+"""
+
+INSERT_BRONZE_INFORMATION = """
+INSERT INTO bronze_station_information VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT DO NOTHING
 """
 
@@ -111,22 +138,65 @@ def to_rows(stations: list[dict], loaded_at: datetime) -> list[tuple]:
     return rows
 
 
-def ingest(db_path: Path = DEFAULT_DB) -> tuple[int, int]:
-    """Télécharge station_status et l'ajoute au bronze. Renvoie (lignes reçues, lignes ajoutées)."""
+def to_information_rows(stations: list[dict], loaded_at: datetime) -> list[tuple]:
+    """Transforme chaque fiche de station en tuple, dans l'ordre des colonnes de bronze_station_information.
+
+    La fiche complète est gardée telle quelle dans `raw` (texte JSON). Son empreinte SHA-256,
+    calculée sur le JSON aux clés triées, identifie une version de la fiche.
+    """
+    rows = []
+    for station in stations:
+        raw = json.dumps(station, sort_keys=True, ensure_ascii=False)
+        record_hash = hashlib.sha256(raw.encode("utf-8")).hexdigest()
+        rows.append(
+            (
+                station.get("station_id"),
+                station.get("name"),
+                station.get("lat"),
+                station.get("lon"),
+                station.get("capacity"),
+                raw,
+                record_hash,
+                loaded_at,
+            )
+        )
+    return rows
+
+
+def _insert(con: duckdb.DuckDBPyConnection, table: str, create_sql: str, insert_sql: str, rows: list[tuple]) -> int:
+    """Crée la table si besoin, insère les lignes sans doublon, renvoie le nombre de lignes ajoutées."""
+    con.execute(create_sql)
+    before = con.execute(f"SELECT count(*) FROM {table}").fetchone()[0]  # noqa: S608 (nom de table fixe)
+    if rows:
+        con.executemany(insert_sql, rows)
+    after = con.execute(f"SELECT count(*) FROM {table}").fetchone()[0]  # noqa: S608
+    return after - before
+
+
+def ingest(db_path: Path = DEFAULT_DB) -> dict[str, tuple[int, int]]:
+    """Télécharge station_status et station_information et les ajoute au bronze.
+
+    Renvoie, pour chaque flux, (lignes reçues, lignes ajoutées).
+    """
     loaded_at = datetime.now(UTC)  # une seule valeur pour tout ce passage
 
     gbfs = fetch_json(GBFS_URL)
     status = fetch_json(find_feed_url(gbfs, "station_status"))
-    rows = to_rows(status["data"]["stations"], loaded_at)
+    information = fetch_json(find_feed_url(gbfs, "station_information"))
+    status_rows = to_rows(status["data"]["stations"], loaded_at)
+    information_rows = to_information_rows(information["data"]["stations"], loaded_at)
 
     db_path.parent.mkdir(parents=True, exist_ok=True)
     with duckdb.connect(str(db_path)) as con:
-        con.execute(CREATE_BRONZE)
-        before = con.execute("SELECT count(*) FROM bronze_station_status").fetchone()[0]
-        con.executemany(INSERT_BRONZE, rows)
-        after = con.execute("SELECT count(*) FROM bronze_station_status").fetchone()[0]
+        added_status = _insert(con, "bronze_station_status", CREATE_BRONZE, INSERT_BRONZE, status_rows)
+        added_information = _insert(
+            con, "bronze_station_information", CREATE_BRONZE_INFORMATION, INSERT_BRONZE_INFORMATION, information_rows
+        )
 
-    return len(rows), after - before
+    return {
+        "station_status": (len(status_rows), added_status),
+        "station_information": (len(information_rows), added_information),
+    }
 
 
 def main() -> None:
@@ -135,8 +205,9 @@ def main() -> None:
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
-    received, added = ingest(args.db)
-    logger.info("%d stations reçues, %d nouvelles observations ajoutées dans %s", received, added, args.db)
+    results = ingest(args.db)
+    for feed, (received, added) in results.items():
+        logger.info("%s : %d lignes reçues, %d nouvelles ajoutées dans %s", feed, received, added, args.db)
 
 
 if __name__ == "__main__":

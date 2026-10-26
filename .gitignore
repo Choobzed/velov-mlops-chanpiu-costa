@@ -18,3 +18,13 @@ mlruns/
 secrets/*
 !secrets/postgres_password.example
 !secrets/pgadmin_password.example
+
+# dbt : fichiers générés à chaque exécution
+dbt/target/
+dbt/logs/
+dbt/dbt_packages/
+dbt/.user.yml
+
+# macOS
+.DS_Store
+**/.DS_Store

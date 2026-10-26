@@ -38,3 +38,6 @@ README.md
 # macOS
 .DS_Store
 **/.DS_Store
+
+# Pipeline de données : inutile au serving
+dbt/
