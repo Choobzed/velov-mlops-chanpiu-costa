@@ -1,0 +1,11 @@
+# Les tables que dbt lit sans les construire : le bronze, rempli par velov.ingest.
+version: 2
+
+sources:
+  - name: bronze
+    schema: main
+    tables:
+      - name: bronze_station_status
+        description: "Photos brutes du flux GBFS station_status, une ligne par (station, relevé)."
+      - name: bronze_station_information
+        description: "Fiches brutes des stations (flux station_information), une ligne par version de fiche."

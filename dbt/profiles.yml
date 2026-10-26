@@ -1,0 +1,8 @@
+# Où dbt se connecte. Le chemin est relatif au dossier depuis lequel on lance dbt (dbt/).
+velov:
+  target: dev
+  outputs:
+    dev:
+      type: duckdb
+      path: ../data/velov.duckdb
+      threads: 1

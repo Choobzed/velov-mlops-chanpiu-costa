@@ -1,0 +1,15 @@
+# Projet dbt du pipeline Vélo'v : bronze (Python) -> silver -> gold (dbt).
+name: velov
+version: "1.0.0"
+config-version: 2
+profile: velov            # la connexion à utiliser, décrite dans profiles.yml
+
+model-paths: ["models"]
+test-paths: ["tests"]
+
+models:
+  velov:
+    silver:
+      +materialized: table   # chaque modèle silver devient une table DuckDB
+    gold:
+      +materialized: table

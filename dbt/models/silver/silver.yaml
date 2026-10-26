@@ -1,0 +1,66 @@
+version: 2
+
+models:
+  - name: silver_station_status
+    description: "Relevés des stations, nettoyés : noms clairs, dates converties, vélos méca / élec séparés."
+    columns:
+      # Clés de la ligne : jamais vides, sinon erreur immédiate.
+      - name: station_id
+        description: "Identifiant de la station (entier)."
+        data_tests:
+          - not_null
+          # Chaque station des relevés doit exister dans la table des fiches de stations.
+          # Seuil : une station toute neuve peut apparaître dans les relevés avant sa fiche.
+          - relationships:
+              arguments:
+                to: ref('silver_station_information')
+                field: station_id
+              config:
+                warn_if: ">0"
+                error_if: ">10"
+      - name: reported_at
+        description: "Heure du relevé de la station (UTC), issue de last_reported."
+        data_tests:
+          - not_null
+      - name: loaded_at
+        description: "Heure à laquelle la ligne a été chargée dans le bronze (UTC)."
+        data_tests:
+          - not_null
+
+      # Mesures : quelques relevés incomplets sont tolérés (avertissement),
+      # au-delà de 10 lignes le pipeline s'arrête.
+      - name: bikes_available
+        description: "Nombre de vélos disponibles."
+        data_tests:
+          - not_null:
+              config:
+                warn_if: ">0"
+                error_if: ">10"
+      - name: docks_available
+        description: "Nombre de places libres."
+        data_tests:
+          - not_null:
+              config:
+                warn_if: ">0"
+                error_if: ">10"
+      - name: mechanical_bikes_available
+        description: "Vélos mécaniques disponibles. Vide si le flux ne donne pas le détail par type."
+        data_tests:
+          - not_null:
+              config:
+                warn_if: ">0"
+                error_if: ">10"
+      - name: electric_bikes_available
+        description: "Vélos électriques disponibles. Vide si le flux ne donne pas le détail par type."
+        data_tests:
+          - not_null:
+              config:
+                warn_if: ">0"
+                error_if: ">10"
+      - name: is_installed
+        description: "La station est-elle installée ?"
+        data_tests:
+          - not_null:
+              config:
+                warn_if: ">0"
+                error_if: ">10"
