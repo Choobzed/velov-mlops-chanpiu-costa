@@ -5,6 +5,8 @@ Projet fil rouge du cours **Industrialisation de l'IA dans le Cloud** (M2 Data E
 Objectif métier : prédire, pour chaque station Vélo'v, le nombre de vélos disponibles **dans une heure**,
 et servir cette prédiction via une API fiable, conteneurisée, puis déployée (on-premise et cloud).
 
+Pour lancer le projet pas à pas, voir [README_EXECUTION.md](README_EXECUTION.md).
+
 ## Progression par session
 
 Chaque étape du cours correspond à un tag git. Absent ou bloqué : repartez du tag de fin de la session précédente.

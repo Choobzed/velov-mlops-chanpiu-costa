@@ -1,0 +1,40 @@
+# Ce que Docker n'envoie pas au build (le .gitignore n'est pas lu par Docker).
+# models/ n'est PAS ignoré : l'image en a besoin.
+
+# Git et environnements locaux
+.git
+.gitignore
+.venv
+venv
+
+# Caches Python et outils
+__pycache__/
+**/__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+**/*.egg-info/
+
+# Secrets : jamais dans une image
+.env
+.env.*
+secrets/
+
+# Données et suivi d'expériences : inutiles au serving
+data/
+mlruns/
+mlflow.db
+
+# Ce qui ne sert qu'au développement
+tests/
+docs/
+exercices/
+scripts/
+Dockerfile
+.dockerignore
+compose.yaml
+README.md
+
+# macOS
+.DS_Store
+**/.DS_Store

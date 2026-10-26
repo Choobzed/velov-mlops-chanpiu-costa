@@ -17,10 +17,11 @@ services:
 
   api:
     build: .
+    image: velov-api:${IMAGE_TAG:-latest}
     ports:
       - "${API_PORT:-8000}:8000"
     environment:
-      MODEL_DIR: /build/models
+      MODEL_DIR: /app/models
       LOG_LEVEL: INFO
       PGHOST: db
       PGPORT: "5432"
