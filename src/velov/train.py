@@ -5,8 +5,17 @@ Ce qu'on distribue (S1) n'est pas "un modèle" mais un paquet :
 - ses métadonnées (version, features, métriques, empreinte SHA-256, versions des
   librairies, hash des données) -> models/metadata.json
 
+Sources de données acceptées (--data) :
+- un fichier CSV (données simulées, `python -m velov.data`) ;
+- une base DuckDB (.duckdb) : on lit alors la table gold `station_hourly`, construite par dbt
+  à partir des vraies données Vélo'v (TP3).
+Dans les deux cas, les données doivent respecter le contrat Pandera de velov.contracts
+avant l'entraînement.
+
 Usage :
     python -m velov.train --data data/velov_history.csv --out models/
+    python -m velov.train --data data/velov.duckdb --out models/
+    python -m velov.train --data data/velov.duckdb --test-days 2   # historique encore court
     python -m velov.train --data data/velov_history.csv --out models/ --mlflow
 """
 
@@ -39,6 +48,7 @@ from velov.features import (
 )
 
 MODEL_FILENAME = "model.joblib"
+GOLD_TABLE = "station_hourly"  # table d'entraînement construite par dbt (dbt/models/gold)
 METADATA_FILENAME = "metadata.json"
 SKOPS_TRUSTED_TYPES = ["sklearn.ensemble._hist_gradient_boosting.predictor.TreePredictor"]
 
@@ -49,6 +59,40 @@ def sha256_of(path: Path) -> str:
         for chunk in iter(lambda: f.read(1 << 20), b""):
             h.update(chunk)
     return h.hexdigest()
+
+
+def content_sha256(df: pd.DataFrame) -> str:
+    """Empreinte du CONTENU des données, indépendante du fichier qui les stocke.
+
+    Le SHA-256 d'un fichier DuckDB change dès que la base est réécrite, même si les lignes
+    sont identiques : on hache donc les lignes, triées par clé, et non le fichier.
+    """
+    ordered = df.sort_values(["station_id", "timestamp"]).reset_index(drop=True)
+    row_hashes = pd.util.hash_pandas_object(ordered, index=False).to_numpy()
+    return hashlib.sha256(row_hashes.tobytes()).hexdigest()
+
+
+def load_training_data(data_path: Path) -> tuple[pd.DataFrame, str]:
+    """Charge les données d'entraînement, vérifie le contrat Pandera, renvoie (données, empreinte).
+
+    - .duckdb : lit la table gold station_hourly (vraies données, TP3) ;
+    - sinon   : lit un CSV (données simulées, S1).
+    """
+    from velov.contracts import validate_training_data  # import local : Pandera hors de l'image
+
+    if data_path.suffix == ".duckdb":
+        import duckdb  # import local : DuckDB n'est pas requis pour servir le modèle
+
+        with duckdb.connect(str(data_path), read_only=True) as con:
+            con.execute("SET TimeZone = 'UTC'")  # instants renvoyés en UTC, quel que soit le poste
+            raw = con.execute(f"SELECT {', '.join(RAW_COLUMNS)} FROM {GOLD_TABLE}").df()  # noqa: S608
+        raw = validate_training_data(raw)
+        data_hash = content_sha256(raw)
+    else:
+        raw = pd.read_csv(data_path, parse_dates=["timestamp"])
+        raw = validate_training_data(raw)
+        data_hash = sha256_of(data_path)
+    return raw, data_hash
 
 
 def build_pipeline(seed: int = 42) -> Pipeline:
@@ -81,9 +125,12 @@ def train(
 ) -> dict:
     """Entraîne, évalue contre une baseline, écrit l'artefact. Retourne les métadonnées."""
     if not data_path.exists():
-        raise FileNotFoundError(f"{data_path} introuvable : lancer d'abord `python -m velov.data`")
+        raise FileNotFoundError(
+            f"{data_path} introuvable : lancer d'abord `python -m velov.data` (CSV simulé) "
+            "ou `python -m velov.ingest` puis `dbt build` (base DuckDB)"
+        )
 
-    raw = pd.read_csv(data_path, parse_dates=["timestamp"])
+    raw, data_hash = load_training_data(data_path)  # lève une erreur si le contrat est violé
     frame = make_training_frame(raw)
     train_df, test_df = temporal_split(frame, test_days)
 
@@ -117,7 +164,8 @@ def train(
             "n_test": int(len(test_df)),
         },
         "artifact": {"file": MODEL_FILENAME, "sha256": sha256_of(model_path)},
-        "data_sha256": sha256_of(data_path),
+        "data_source": str(data_path),
+        "data_sha256": data_hash,
         "runtime": {
             "python": platform.python_version(),
             "scikit-learn": sklearn.__version__,
@@ -170,10 +218,13 @@ def main() -> None:
     parser.add_argument("--data", type=Path, default=Path("data/velov_history.csv"))
     parser.add_argument("--out", type=Path, default=Path("models"))
     parser.add_argument("--version", default="0.1.0")
+    parser.add_argument(
+        "--test-days", type=int, default=14, help="jours les plus récents réservés au test (défaut : 14)"
+    )
     parser.add_argument("--mlflow", action="store_true", help="journaliser aussi dans MLflow")
     args = parser.parse_args()
 
-    metadata = train(args.data, args.out, version=args.version)
+    metadata = train(args.data, args.out, version=args.version, test_days=args.test_days)
     m = metadata["metrics"]
     print(f"MAE modèle   : {m['mae_model']:.3f} vélos")
     print(f"MAE baseline : {m['mae_baseline_persistence']:.3f} vélos (persistance)")

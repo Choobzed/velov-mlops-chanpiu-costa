@@ -70,7 +70,14 @@ def make_training_frame(df: pd.DataFrame) -> pd.DataFrame:
 
     Le décalage se fait PAR station (groupby) : sinon la dernière heure d'une station
     recevrait la première heure de la station suivante comme cible (fuite silencieuse).
+
+    Avec de vraies données (TP3), une heure peut manquer (collecte arrêtée, station muette) :
+    la ligne suivante n'est alors pas "dans une heure". On ne garde que les paires de lignes
+    séparées d'exactement une heure, sinon la cible serait fausse sans aucune erreur visible.
     """
     out = add_features(df).sort_values(["station_id", "timestamp"])
-    out[TARGET] = out.groupby("station_id")["bikes_available"].shift(-1)
+    by_station = out.groupby("station_id")
+    out[TARGET] = by_station["bikes_available"].shift(-1)
+    next_timestamp = by_station["timestamp"].shift(-1)
+    out.loc[(next_timestamp - out["timestamp"]) != pd.Timedelta(hours=1), TARGET] = None
     return out.dropna(subset=[TARGET]).reset_index(drop=True)

@@ -46,3 +46,13 @@ def test_target_is_shifted_per_station_without_leakage():
     assert frame.groupby("station_id").size().tolist() == [47, 47]
     s1 = frame[frame["station_id"] == "1"].reset_index(drop=True)
     assert (s1[TARGET].iloc[:-1].to_numpy() == s1["bikes_available"].iloc[1:].to_numpy()).all()
+
+
+def test_target_skips_missing_hours():
+    # Vraies données : l'heure de 2 h manque pour la station. La ligne de 1 h ne doit pas
+    # recevoir comme cible le nombre de vélos de 3 h (deux heures plus tard).
+    df = simulate(days=2, n_stations=1).head(4)  # 0 h, 1 h, 2 h, 3 h
+    df = df.drop(index=2).reset_index(drop=True)  # 0 h, 1 h, 3 h
+    frame = make_training_frame(df)
+    assert frame["timestamp"].tolist() == [df.loc[0, "timestamp"]]  # seule la paire 0 h -> 1 h est valable
+    assert frame.loc[0, TARGET] == df.loc[1, "bikes_available"]
