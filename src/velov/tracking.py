@@ -17,6 +17,7 @@ main() (import local), sinon les deux modules s'attendent l'un l'autre (import c
 
 from __future__ import annotations
 
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -32,8 +33,13 @@ REGISTERED_MODEL_NAME = "velov-availability"
 
 def _git(*args: str) -> str:
     """Résultat d'une commande git, ou "unknown" si git est absent (dans un conteneur, par exemple)."""
+    git = shutil.which("git")  # chemin complet de git, None s'il n'est pas installé
+    if git is None:
+        return "unknown"
     try:
-        result = subprocess.run(["git", *args], capture_output=True, text=True, check=True)
+        # S603 (ruff, règles de sécurité) : pas de risque d'injection ici, les arguments sont
+        # écrits en dur dans ce module, jamais fournis par un utilisateur, et sans shell.
+        result = subprocess.run([git, *args], capture_output=True, text=True, check=True)  # noqa: S603
     except (OSError, subprocess.CalledProcessError):
         return "unknown"
     return result.stdout.strip()
