@@ -1,0 +1,77 @@
+# Stack MLflow (TP4, étape 1) : serveur de suivi et registre de modèles.
+#
+#   mlflow-db   PostgreSQL : runs, paramètres, métriques, tags, registre (versions, alias)
+#   mlflow      le serveur MLflow : API + interface web, sur le port 5000
+#   mlartifacts volume Docker : les fichiers produits (modèles, paquet joblib + metadata.json),
+#               servis par le serveur MLflow lui-même
+#
+# Lancement :   docker compose -f compose.mlflow.yaml up -d --build
+# État :        docker compose -f compose.mlflow.yaml ps
+# Arrêt :       docker compose -f compose.mlflow.yaml down      (garde les données)
+#
+# Le mot de passe de la base vient du fichier .env (MLFLOW_DB_PASSWORD), jamais commité.
+# Il ne doit contenir que des lettres et des chiffres : il est inséré dans une URL.
+
+name: velov-mlflow   # projet séparé de la stack de l'API (compose.yaml)
+
+services:
+  mlflow-db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: mlflow
+      POSTGRES_USER: mlflow
+      # :? arrête le lancement avec ce message si la variable manque dans .env
+      POSTGRES_PASSWORD: ${MLFLOW_DB_PASSWORD:?Définissez MLFLOW_DB_PASSWORD dans le fichier .env}
+    volumes:
+      - mlflow_db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mlflow -d mlflow"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  mlflow:
+    build:
+      context: ./docker
+      dockerfile: mlflow.Dockerfile
+    image: velov-mlflow:3.16.1
+    command:
+      - mlflow
+      - server
+      - --host
+      - 0.0.0.0                 # écoute sur toutes les interfaces du conteneur
+      - --port
+      - "5000"
+      # Où vont runs, métriques et registre : la base PostgreSQL de la stack.
+      - --backend-store-uri
+      - postgresql://mlflow:${MLFLOW_DB_PASSWORD:?Définissez MLFLOW_DB_PASSWORD dans le fichier .env}@mlflow-db:5432/mlflow
+      # Où vont les fichiers : le volume, et c'est le serveur qui les sert aux clients
+      # (les scripts n'ont pas besoin d'accéder au disque de la VM).
+      - --serve-artifacts
+      - --artifacts-destination
+      - /mlartifacts
+      # Protection contre le DNS rebinding (MLflow 3.5 et plus) : en-têtes Host acceptés.
+      # localhost, les adresses privées de l'école (192.168.*) et le nom du service.
+      - --allowed-hosts
+      - localhost,localhost:*,127.0.0.1,127.0.0.1:*,192.168.*,10.*,mlflow,mlflow:*
+    ports:
+      # Port publié configurable : sur macOS, le 5000 est souvent pris par AirPlay.
+      - "${MLFLOW_PORT:-5000}:5000"
+    volumes:
+      - mlartifacts:/mlartifacts
+    depends_on:
+      mlflow-db:
+        condition: service_healthy
+    healthcheck:
+      # /health répond sans vérification de l'en-tête Host ; Python remplace curl, absent de l'image.
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:5000/health', timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+
+volumes:
+  mlflow_db_data:   # la base : runs et registre survivent à un redémarrage
+  mlartifacts:      # les modèles et fichiers des runs survivent aussi
