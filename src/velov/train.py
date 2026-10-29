@@ -16,7 +16,8 @@ Usage :
     python -m velov.train --data data/velov_history.csv --out models/
     python -m velov.train --data data/velov.duckdb --out models/
     python -m velov.train --data data/velov.duckdb --test-days 2   # historique encore court
-    python -m velov.train --data data/velov_history.csv --out models/ --mlflow
+    python -m velov.train --seed 42 --mlflow              # journalise le run (MLFLOW_TRACKING_URI)
+    python -m velov.train --seed 42 --mlflow --register   # et inscrit le modèle au registre
 """
 
 from __future__ import annotations
@@ -51,6 +52,11 @@ MODEL_FILENAME = "model.joblib"
 GOLD_TABLE = "station_hourly"  # table d'entraînement construite par dbt (dbt/models/gold)
 METADATA_FILENAME = "metadata.json"
 SKOPS_TRUSTED_TYPES = ["sklearn.ensemble._hist_gradient_boosting.predictor.TreePredictor"]
+MAX_ITER: int = 200
+LEARNING_RATE: float = 0.1
+# Heures de pointe (heure de Lyon) : trajets domicile-travail du matin et du soir.
+# C'est là que la prévision compte le plus pour un usager.
+PEAK_HOURS: tuple[int, ...] = (7, 8, 9, 17, 18, 19)
 
 
 def sha256_of(path: Path) -> str:
@@ -102,8 +108,13 @@ def build_pipeline(seed: int = 42) -> Pipeline:
             ("num", "passthrough", NUMERIC_FEATURES),
         ]
     )
-    model = HistGradientBoostingRegressor(max_iter=200, learning_rate=0.1, random_state=seed)
+    model = HistGradientBoostingRegressor(max_iter=MAX_ITER, learning_rate=LEARNING_RATE, random_state=seed)
     return Pipeline([("preprocess", preprocess), ("model", model)])
+
+
+def _iso(ts: object) -> str:
+    """Horodatage en texte ISO 8601 (UTC), pour metadata.json et les tags MLflow."""
+    return pd.Timestamp(ts).tz_convert("UTC").isoformat()
 
 
 def temporal_split(df: pd.DataFrame, test_days: int) -> tuple[pd.DataFrame, pd.DataFrame]:
@@ -140,6 +151,11 @@ def train(
     y_test = test_df[TARGET]
     pred = np.clip(pipeline.predict(test_df[FEATURES]), 0, test_df["capacity"])
     mae_model = float(mean_absolute_error(y_test, pred))
+    # Même erreur, mais seulement aux heures de pointe : la MAE globale est flattée
+    # par les heures de nuit, où presque rien ne bouge.
+    # y_test est une série pandas (filtre direct), pred un tableau numpy (.to_numpy()).
+    is_peak = test_df["hour"].isin(PEAK_HOURS)
+    mae_peak = float(mean_absolute_error(y_test[is_peak], pred[is_peak.to_numpy()]))
     # Baseline "persistance" : dans 1 h, il y aura autant de vélos que maintenant.
     # Le modèle doit justifier sa complexité face à cette baseline (exigence EX-05).
     mae_baseline = float(mean_absolute_error(y_test, test_df["bikes_available"]))
@@ -156,8 +172,15 @@ def train(
         "input_columns": RAW_COLUMNS,
         "features": FEATURES,
         "target": TARGET,
+        "params": {
+            "seed": seed,
+            "max_iter": MAX_ITER,
+            "learning_rate": LEARNING_RATE,
+            "test_days": test_days,
+        },
         "metrics": {
             "mae_model": round(mae_model, 3),
+            "mae_model_peak_hours": round(mae_peak, 3),
             "mae_baseline_persistence": round(mae_baseline, 3),
             "test_days": test_days,
             "n_train": int(len(train_df)),
@@ -166,6 +189,14 @@ def train(
         "artifact": {"file": MODEL_FILENAME, "sha256": sha256_of(model_path)},
         "data_source": str(data_path),
         "data_sha256": data_hash,
+        # Période couverte : deux runs ne sont comparables que s'ils sont évalués sur la
+        # même fenêtre de test (règle de promotion, Must 3).
+        "data_period": {
+            "start": _iso(frame["timestamp"].min()),
+            "end": _iso(frame["timestamp"].max()),
+            "test_start": _iso(test_df["timestamp"].min()),
+            "test_end": _iso(test_df["timestamp"].max()),
+        },
         "runtime": {
             "python": platform.python_version(),
             "scikit-learn": sklearn.__version__,
@@ -177,42 +208,6 @@ def train(
     return metadata
 
 
-def log_to_mlflow(metadata: dict, out_dir: Path) -> None:
-    """Journalise le run et le modèle dans MLflow (aperçu S1, approfondi en S4)."""
-    import mlflow  # import local : MLflow n'est pas requis pour servir le modèle
-    from mlflow.models import infer_signature
-
-    pipeline = joblib.load(out_dir / MODEL_FILENAME)
-    sample = make_training_frame(
-        pd.DataFrame(
-            {
-                "station_id": [1, 1],
-                "timestamp": pd.to_datetime(["2026-06-01T06:00Z", "2026-06-01T07:00Z"]),
-                "capacity": [20, 20],
-                "bikes_available": [8, 5],
-                "temperature": [21.0, 22.0],
-                "is_raining": [False, False],
-            }
-        )
-    )[FEATURES]
-
-    mlflow.set_experiment("velov-availability")
-    with mlflow.start_run(run_name=f"v{metadata['model_version']}"):
-        mlflow.log_params({"model": "HistGradientBoostingRegressor", "test_days": metadata["metrics"]["test_days"]})
-        mlflow.log_metrics({k: v for k, v in metadata["metrics"].items() if k.startswith("mae")})
-        mlflow.sklearn.log_model(
-            pipeline,
-            name="model",
-            signature=infer_signature(sample, pipeline.predict(sample)),
-            input_example=sample,
-            # Depuis MLflow 3.x, sklearn est sérialisé par défaut en skops (format sûr,
-            # sans exécution de code arbitraire), plus en pickle. skops refuse les types
-            # qu'il ne connaît pas : on déclare explicitement ceux qu'on a vérifiés.
-            serialization_format="skops",
-            skops_trusted_types=SKOPS_TRUSTED_TYPES,
-        )
-
-
 def main() -> None:
     parser = argparse.ArgumentParser(description="Entraîne le modèle Vélo'v v0.")
     parser.add_argument("--data", type=Path, default=Path("data/velov_history.csv"))
@@ -221,17 +216,27 @@ def main() -> None:
     parser.add_argument(
         "--test-days", type=int, default=14, help="jours les plus récents réservés au test (défaut : 14)"
     )
-    parser.add_argument("--mlflow", action="store_true", help="journaliser aussi dans MLflow")
+    parser.add_argument("--seed", type=int, default=42, help="seed du modèle (défaut : 42)")
+    parser.add_argument(
+        "--mlflow", action="store_true", help="journaliser le run dans MLflow (serveur : MLFLOW_TRACKING_URI)"
+    )
+    parser.add_argument("--register", action="store_true", help="avec --mlflow : inscrire aussi le modèle au registre")
     args = parser.parse_args()
 
-    metadata = train(args.data, args.out, version=args.version, test_days=args.test_days)
+    metadata = train(args.data, args.out, version=args.version, test_days=args.test_days, seed=args.seed)
     m = metadata["metrics"]
     print(f"MAE modèle   : {m['mae_model']:.3f} vélos")
+    print(f"MAE pointe   : {m['mae_model_peak_hours']:.3f} vélos (7-9 h et 17-19 h)")
     print(f"MAE baseline : {m['mae_baseline_persistence']:.3f} vélos (persistance)")
+    print(f"Seed         : {metadata['params']['seed']}")
     print(f"Artefact     : {args.out / MODEL_FILENAME} (sha256 {metadata['artifact']['sha256'][:12]}...)")
     if args.mlflow:
-        log_to_mlflow(metadata, args.out)
-        print("Run journalisé dans MLflow (voir `mlflow ui`)")
+        # Import local : velov.tracking importe velov.train, l'importer en haut du fichier
+        # créerait un import circulaire. Et MLflow n'est requis que si on journalise.
+        from velov.tracking import log_run
+
+        run_id = log_run(metadata, args.out, register=args.register)
+        print(f"Run MLflow   : {run_id}")
 
 
 if __name__ == "__main__":

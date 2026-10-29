@@ -404,6 +404,70 @@ température hors bornes.
 DuckDB et Pandera ne sont importés que pendant l'entraînement : l'API, qui importe
 `velov.train`, n'en a pas besoin, et l'image Docker de serving reste inchangée.
 
+## 11. Suivre les entraînements dans MLflow (TP4 : Must 2)
+
+### Pourquoi
+
+Jusqu'ici, un entraînement laissait deux fichiers dans `models/`, écrasés au suivant. Avec
+MLflow, chaque entraînement devient un **run** conservé sur le serveur de la VM, avec tout ce
+qu'il faut pour savoir d'où vient le modèle et le comparer aux autres.
+
+### Ce qui part dans MLflow (`src/velov/tracking.py`)
+
+| Catégorie | Contenu | À quoi ça sert |
+|---|---|---|
+| Paramètres | `model`, `seed`, `max_iter`, `learning_rate`, `test_days` | Refaire le même modèle |
+| Métriques | `mae_model`, `mae_model_peak_hours`, `mae_baseline_persistence`, `n_train`, `n_test` | Comparer les runs |
+| Tags | `git_commit`, `git_dirty`, `data_sha256`, `data_source`, `data_start`/`data_end`, `test_start`/`test_end` | Savoir quel code et quelles données ont produit le modèle |
+| Modèle | dossier `model/` (format MLflow, avec signature et exemple d'entrée) | Le recharger avec `mlflow.sklearn.load_model` |
+| Paquet | dossier `package/` (`model.joblib` + `metadata.json`) | Le paquet exact que charge l'API |
+
+- `mae_model_peak_hours` : la MAE calculée seulement de 7 h à 9 h et de 17 h à 19 h (heure de
+  Lyon). La MAE globale est flattée par les heures de nuit, où presque rien ne bouge.
+- `git_dirty` vaut `true` si des fichiers suivis par git étaient modifiés sans être commités :
+  le commit indiqué ne suffit alors pas à retrouver le code exact. Pour un run de référence,
+  commiter d'abord.
+- `test_start` / `test_end` : deux runs ne sont comparables que s'ils ont été évalués sur la
+  même fenêtre de test (règle de promotion du Must 3).
+- La seed, les hyperparamètres et la période des données sont aussi dans `metadata.json`.
+
+L'adresse du serveur n'est écrite nulle part dans le code : MLflow lit la variable
+`MLFLOW_TRACKING_URI`. `velov.tracking` n'est importé que si `--mlflow` est demandé : l'API
+et son image Docker n'ont pas besoin de MLflow.
+
+### Les commandes
+
+```bash
+export MLFLOW_TRACKING_URI=http://192.168.1.232:5000   # le serveur de la VM
+
+python -m velov.train --seed 42 --mlflow
+python -m velov.train --seed 42 --mlflow
+python -m velov.train --seed 7 --mlflow
+```
+
+Pour essayer sans le serveur : `export MLFLOW_TRACKING_URI=sqlite:///mlflow.db` (fichier
+local, ignoré par git), puis `mlflow ui --backend-store-uri sqlite:///mlflow.db --port 5001`.
+
+`--register` inscrit en plus le modèle au registre (`velov-availability`, une nouvelle
+version à chaque fois) : il servira à la promotion du Must 3.
+
+### Reproductibilité : même seed, même modèle
+
+Données simulées (`python -m velov.data`, 90 jours, 20 stations), 14 jours de test :
+
+| Run | Seed | MAE | MAE heures de pointe | Empreinte de `model.joblib` |
+|---|---|---|---|---|
+| 1 | 42 | 1.339 | 1.415 | identique au run 2 |
+| 2 | 42 | 1.339 | 1.415 | identique au run 1 |
+| 3 | 7 | 1.345 | 1.427 | différente |
+
+- Avec la même seed et les mêmes données, on obtient le même modèle, à l'octet près.
+- Changer seulement la seed fait varier la MAE de **0,006 vélo, soit environ 0,4 %**. C'est le
+  bruit du hasard, pas une amélioration. Un nouveau modèle qui ne gagne que 0,4 % n'est donc
+  pas meilleur : c'est pourquoi la règle de promotion (Must 3) exige un gain d'au moins 2 %.
+- L'empreinte dépend aussi des versions des librairies : elle peut différer d'une machine à
+  l'autre, d'où les versions notées dans `metadata.json` (`runtime`).
+
 ## En cas de problème
 
 ```bash
