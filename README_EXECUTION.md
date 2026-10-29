@@ -523,6 +523,77 @@ Si `ruff format --check` échoue, `ruff format .` corrige la mise en forme tout 
 Sur GitHub, onglet **Actions** du dépôt : une ligne par push, verte ou rouge. Cliquer dessus
 montre les trois jobs et le détail de chaque étape.
 
+## 13. Promouvoir un modèle (TP4 : Must 3)
+
+### Pourquoi
+
+Le registre MLflow garde toutes les versions du modèle `velov-availability`. Il faut décider
+laquelle l'API doit servir, et pouvoir revenir en arrière. On ne déplace pas des fichiers : on
+déplace des **alias**, des étiquettes posées sur une version.
+
+| Alias | Qui le pose | Signification |
+|---|---|---|
+| `@challenger` | `velov.train --mlflow --register` | La dernière version inscrite, candidate |
+| `@champion` | `velov.promote --apply` | La version à servir |
+| `@previous-champion` | `velov.promote --apply` | L'ancien champion, pour revenir en arrière |
+
+Les anciens « stages » (`Staging`, `Production`) sont dépréciés depuis MLflow 2.9 : on ne
+les utilise pas.
+
+### La règle (`src/velov/promote.py`, fonction `decide`)
+
+Écrite avant de regarder les chiffres, vérifiée dans cet ordre :
+
+1. **Même fenêtre** : challenger et champion sont réévalués par le script, sur les mêmes
+   derniers jours des données actuelles. Comparer au score enregistré à l'entraînement du
+   champion fausserait tout : ses données de test étaient plus anciennes.
+2. **Battre la persistance** (EX-05).
+3. **Battre le champion d'au moins 2 %**. Changer seulement la seed fait varier la MAE de
+   0,4 % (section 11) : un gain plus petit que 2 % peut venir du hasard.
+
+### Les commandes
+
+```bash
+export MLFLOW_TRACKING_URI=http://192.168.1.232:5000
+
+python -m velov.train --seed 42 --mlflow --register   # version N, alias @challenger
+python -m velov.promote                                # affiche la décision, ne change rien
+python -m velov.promote --apply                        # applique la décision
+```
+
+Sans `--apply`, rien ne change : un membre du binôme relit la décision, puis l'applique
+(validation humaine). Avec `--apply`, la décision est aussi notée dans un tag `promotion` sur
+la version du challenger : promue ou refusée, pourquoi, quand, et par qui (EX-14).
+
+Exemple réel (données simulées, seed 42 puis seed 7) :
+
+```
+Fenêtre de test : 2026-08-15T21:00:00+00:00 -> 2026-08-29T20:00:00+00:00, 6720 lignes
+challenger v2   : MAE 1.345
+champion   v1   : MAE 1.339
+persistance     : MAE 1.879
+Décision : REFUSER (gain insuffisant : MAE 1.345 > 1.313 (champion - 2%))
+```
+
+### Revenir en arrière
+
+Si le nouveau champion pose problème, on remet l'alias sur l'ancien, depuis Python :
+
+```python
+import mlflow
+client = mlflow.MlflowClient()
+ancien = client.get_model_version_by_alias("velov-availability", "previous-champion").version
+client.set_registered_model_alias("velov-availability", "champion", ancien)
+```
+
+### Les tests (`tests/test_promote.py`)
+
+- La règle seule, cas par cas : premier champion, persistance non battue, gain de 2 % tout
+  juste suffisant, gain de 0,7 % refusé, fenêtres différentes.
+- Le scénario complet sur un vrai registre MLflow (un fichier SQLite temporaire) : un premier
+  champion, un modèle nettement meilleur promu (l'ancien devient `@previous-champion`), puis
+  le même modèle avec une autre seed, refusé. Ces tests tournent aussi dans la CI.
+
 ## En cas de problème
 
 ```bash

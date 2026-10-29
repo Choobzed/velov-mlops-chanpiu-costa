@@ -127,6 +127,27 @@ def temporal_split(df: pd.DataFrame, test_days: int) -> tuple[pd.DataFrame, pd.D
     return train, test
 
 
+def evaluate(pipeline: Pipeline, test_df: pd.DataFrame) -> dict[str, float]:
+    """Erreurs du modèle et de la baseline sur une fenêtre de test (valeurs non arrondies).
+
+    Utilisée à l'entraînement, et par velov.promote pour réévaluer challenger et champion
+    sur la même fenêtre récente.
+    """
+    y_test = test_df[TARGET]
+    pred = np.clip(pipeline.predict(test_df[FEATURES]), 0, test_df["capacity"])
+    # Même erreur, mais seulement aux heures de pointe : la MAE globale est flattée
+    # par les heures de nuit, où presque rien ne bouge.
+    # y_test est une série pandas (filtre direct), pred un tableau numpy (.to_numpy()).
+    is_peak = test_df["hour"].isin(PEAK_HOURS)
+    return {
+        "mae_model": float(mean_absolute_error(y_test, pred)),
+        "mae_model_peak_hours": float(mean_absolute_error(y_test[is_peak], pred[is_peak.to_numpy()])),
+        # Baseline "persistance" : dans 1 h, il y aura autant de vélos que maintenant.
+        # Le modèle doit justifier sa complexité face à cette baseline (exigence EX-05).
+        "mae_baseline_persistence": float(mean_absolute_error(y_test, test_df["bikes_available"])),
+    }
+
+
 def train(
     data_path: Path,
     out_dir: Path,
@@ -148,17 +169,7 @@ def train(
     pipeline = build_pipeline(seed)
     pipeline.fit(train_df[FEATURES], train_df[TARGET])
 
-    y_test = test_df[TARGET]
-    pred = np.clip(pipeline.predict(test_df[FEATURES]), 0, test_df["capacity"])
-    mae_model = float(mean_absolute_error(y_test, pred))
-    # Même erreur, mais seulement aux heures de pointe : la MAE globale est flattée
-    # par les heures de nuit, où presque rien ne bouge.
-    # y_test est une série pandas (filtre direct), pred un tableau numpy (.to_numpy()).
-    is_peak = test_df["hour"].isin(PEAK_HOURS)
-    mae_peak = float(mean_absolute_error(y_test[is_peak], pred[is_peak.to_numpy()]))
-    # Baseline "persistance" : dans 1 h, il y aura autant de vélos que maintenant.
-    # Le modèle doit justifier sa complexité face à cette baseline (exigence EX-05).
-    mae_baseline = float(mean_absolute_error(y_test, test_df["bikes_available"]))
+    scores = evaluate(pipeline, test_df)
 
     out_dir.mkdir(parents=True, exist_ok=True)
     model_path = out_dir / MODEL_FILENAME
@@ -179,9 +190,7 @@ def train(
             "test_days": test_days,
         },
         "metrics": {
-            "mae_model": round(mae_model, 3),
-            "mae_model_peak_hours": round(mae_peak, 3),
-            "mae_baseline_persistence": round(mae_baseline, 3),
+            **{name: round(value, 3) for name, value in scores.items()},
             "test_days": test_days,
             "n_train": int(len(train_df)),
             "n_test": int(len(test_df)),
@@ -235,8 +244,10 @@ def main() -> None:
         # créerait un import circulaire. Et MLflow n'est requis que si on journalise.
         from velov.tracking import log_run
 
-        run_id = log_run(metadata, args.out, register=args.register)
+        run_id, version = log_run(metadata, args.out, register=args.register)
         print(f"Run MLflow   : {run_id}")
+        if version is not None:
+            print(f"Registre     : version {version}, alias @challenger (décision : python -m velov.promote)")
 
 
 if __name__ == "__main__":

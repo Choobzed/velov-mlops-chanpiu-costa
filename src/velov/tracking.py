@@ -29,6 +29,7 @@ from velov.train import MODEL_FILENAME, SKOPS_TRUSTED_TYPES
 
 EXPERIMENT_NAME = "velov-availability"
 REGISTERED_MODEL_NAME = "velov-availability"
+CHALLENGER_ALIAS = "challenger"
 
 
 def _git(*args: str) -> str:
@@ -72,11 +73,12 @@ def _signature_sample() -> pd.DataFrame:
     )[FEATURES]
 
 
-def log_run(metadata: dict, out_dir: Path, register: bool = False) -> str:
-    """Journalise un entraînement dans MLflow et renvoie l'identifiant du run.
+def log_run(metadata: dict, out_dir: Path, register: bool = False) -> tuple[str, str | None]:
+    """Journalise un entraînement dans MLflow. Renvoie (identifiant du run, version au registre).
 
     register=True inscrit aussi le modèle au registre (nouvelle version de
-    REGISTERED_MODEL_NAME), première étape avant une promotion (Must 3).
+    REGISTERED_MODEL_NAME) et lui donne l'alias @challenger : c'est le candidat que
+    velov.promote comparera au @champion (Must 3). Sinon, la version renvoyée est None.
     """
     import mlflow  # import local : MLflow n'est pas requis pour servir le modèle
     from mlflow.models import infer_signature
@@ -105,7 +107,7 @@ def log_run(metadata: dict, out_dir: Path, register: bool = False) -> str:
             }
         )
 
-        mlflow.sklearn.log_model(
+        model_info = mlflow.sklearn.log_model(
             pipeline,
             name="model",
             signature=infer_signature(sample, pipeline.predict(sample)),
@@ -120,4 +122,9 @@ def log_run(metadata: dict, out_dir: Path, register: bool = False) -> str:
         # Le paquet que charge l'API, tel quel : model.joblib + metadata.json.
         mlflow.log_artifacts(str(out_dir), artifact_path="package")
 
-    return run.info.run_id
+    version = None
+    if register:
+        version = str(model_info.registered_model_version)
+        # L'alias se déplace sur la dernière version inscrite : un seul challenger à la fois.
+        mlflow.MlflowClient().set_registered_model_alias(REGISTERED_MODEL_NAME, CHALLENGER_ALIAS, version)
+    return run.info.run_id, version
