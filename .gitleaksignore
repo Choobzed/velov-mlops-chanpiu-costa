@@ -1,0 +1,6 @@
+# Exceptions gitleaks, chacune justifiée (S4 · 33). Format : commit:fichier:règle:ligne
+#
+# Faux mot de passe d'exemple dans la documentation de la stack MLflow (TP4, Must 1) :
+# "unMotDePasseLong123" n'a jamais été utilisé. L'exemple a depuis été remplacé par "...",
+# mais l'ancien commit reste dans l'historique, que gitleaks parcourt en entier.
+781bb8962cc94d97d4f2677a2e5e0eda55d267f9:docs/tp4_mlflow.md:generic-api-key:25

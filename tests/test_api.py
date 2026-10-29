@@ -77,16 +77,12 @@ def test_health_is_live_and_ready_fails_without_model(client, monkeypatch):
     assert client.get("/ready").status_code == 503
 
 
-def test_predict_is_persisted_when_database_is_configured(
-    client, valid_payload, monkeypatch
-):
+def test_predict_is_persisted_when_database_is_configured(client, valid_payload, monkeypatch):
     from velov.api import main
 
     persisted = []
     monkeypatch.setenv("PGHOST", "db")
-    monkeypatch.setattr(
-        main, "save_prediction", lambda request, response: persisted.append((request, response))
-    )
+    monkeypatch.setattr(main, "save_prediction", lambda request, response: persisted.append((request, response)))
 
     r = client.post("/v1/predict", json=valid_payload)
 

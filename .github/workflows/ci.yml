@@ -1,0 +1,112 @@
+# Intégration continue du projet Vélo'v (TP4, Must 4).
+#
+# À chaque push et pull request, trois jobs sur un runner GitHub :
+#   tests    ruff (lint + format), puis pytest : API, features, contrat Pandera, qualité du modèle
+#   secrets  gitleaks sur TOUT l'historique git, binaire vérifié par son SHA-256
+#   image    entraîne un petit modèle, construit l'image de l'API, la démarre et attend /ready
+#
+# Sécurité de la chaîne (S4 · 32) :
+#   - chaque action tierce est épinglée par le SHA de son commit, pas par un tag : un tag
+#     peut être déplacé vers du code malveillant (attaque de trivy-action, mars 2026) ;
+#   - permissions: contents: read : le jeton du workflow ne peut rien modifier dans le dépôt ;
+#   - aucun secret n'est utilisé : le workflow n'en a pas besoin.
+#
+# Rédigé avec l'aide d'une IA (Claude, Anthropic).
+
+name: ci
+
+on: [push, pull_request]
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements*.txt
+      - name: Installer les dépendances
+        run: pip install -r requirements-dev.txt
+      - name: Lint (ruff check)
+        run: ruff check .
+      - name: Format (ruff format --check)
+        run: ruff format --check .
+      - name: Tests (pytest)
+        # tests/test_model_quality.py échoue si le modèle ne bat plus la persistance (EX-05)
+        # ou si la même seed ne donne plus le même modèle.
+        run: pytest
+
+  secrets:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    env:
+      GITLEAKS_VERSION: "8.30.1"
+      # SHA-256 publié dans gitleaks_8.30.1_checksums.txt (release officielle) :
+      # si le fichier téléchargé a été modifié, la vérification échoue et le job s'arrête.
+      GITLEAKS_SHA256: "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0 # tout l'historique : un secret supprimé reste lisible dans les anciens commits
+      - name: Installer gitleaks (binaire vérifié)
+        run: |
+          cd "$RUNNER_TEMP"
+          curl -sSfL -o gitleaks.tar.gz \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          echo "${GITLEAKS_SHA256}  gitleaks.tar.gz" | sha256sum --check -
+          tar -xzf gitleaks.tar.gz gitleaks
+      - name: Chercher des secrets dans l'historique
+        # --redact : si un secret est trouvé, il n'est pas recopié dans les logs publics de la CI.
+        # Les exceptions justifiées sont dans .gitleaksignore.
+        run: '"$RUNNER_TEMP/gitleaks" git . --redact -v'
+
+  image:
+    needs: [tests, secrets]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements*.txt
+      - name: Installer les dépendances
+        run: pip install -r requirements-dev.txt
+      - name: Entraîner un petit modèle de test
+        # Le vrai modèle n'est pas dans git : on en entraîne un petit, juste pour que l'image ait
+        # quelque chose à servir. On vérifie la chaîne de build, pas la qualité (job tests).
+        run: |
+          python -m velov.data --days 30 --stations 5 --out data/velov_history.csv
+          python -m velov.train --data data/velov_history.csv --out models --version 0.0.0-ci --test-days 7
+      - name: Construire l'image
+        run: docker build --build-arg VERSION=0.0.0-ci --build-arg COMMIT="${GITHUB_SHA::7}" -t velov-api:ci .
+      - name: Démarrer l'API et attendre /ready
+        run: |
+          docker run -d --name velov-api -p 8000:8000 velov-api:ci
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:8000/ready; then
+              echo
+              echo "API prête après ${i} tentative(s)"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "/ready ne répond pas 200 après 60 s : logs du conteneur" >&2
+          docker logs velov-api
+          exit 1
+      - name: Une prédiction de bout en bout
+        run: |
+          curl -sf -X POST http://localhost:8000/v1/predict \
+            -H "Content-Type: application/json" \
+            -d '{"station_id": 1, "timestamp": "2026-10-06T08:00:00+02:00", "capacity": 20,
+                 "bikes_available": 12, "temperature": 14.5, "is_raining": false}'
+      - name: Logs du conteneur en cas d'échec
+        if: failure()
+        run: docker logs velov-api || true

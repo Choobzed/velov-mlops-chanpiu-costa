@@ -468,6 +468,61 @@ Données simulées (`python -m velov.data`, 90 jours, 20 stations), 14 jours de 
 - L'empreinte dépend aussi des versions des librairies : elle peut différer d'une machine à
   l'autre, d'où les versions notées dans `metadata.json` (`runtime`).
 
+## 12. L'intégration continue (TP4 : Must 4)
+
+### Pourquoi
+
+Jusqu'ici, on lançait `ruff` et `pytest` à la main, quand on y pensait. La CI (intégration
+continue) les lance **toute seule, à chaque `git push`**, sur un ordinateur de GitHub. Si
+quelque chose casse, le commit apparaît en rouge sur GitHub, et on le sait tout de suite.
+
+### Ce que vérifie `.github/workflows/ci.yml`
+
+| Job | Ce qu'il fait | Ce qu'il protège |
+|---|---|---|
+| `tests` | `ruff check`, `ruff format --check`, puis `pytest` (API, features, contrat Pandera, qualité du modèle) | Le code et le modèle |
+| `secrets` | `gitleaks` sur **tout** l'historique git | Aucun mot de passe ni clé dans le dépôt (EX-06) |
+| `image` | Entraîne un petit modèle, construit l'image Docker, la démarre, attend `/ready`, puis fait une prédiction | L'image se construit et sert vraiment des prédictions |
+
+`image` ne démarre que si `tests` et `secrets` sont au vert (`needs`).
+
+### Le test du modèle : `tests/test_model_quality.py`
+
+Un modèle peut se dégrader sans qu'aucun test de code n'échoue : l'API démarre, `/ready`
+répond 200, mais les prédictions sont mauvaises. Ce fichier entraîne un petit modèle
+(30 jours simulés, 5 stations, test sur 7 jours, environ 1 seconde) et vérifie que :
+
+- le modèle bat la baseline de persistance (EX-05) ;
+- la MAE aux heures de pointe est calculée et plausible ;
+- deux entraînements avec la même seed donnent le même fichier, octet pour octet.
+
+Essai : avec `LEARNING_RATE = 3.0` dans `train.py`, la MAE passe à 17,9 vélos contre 2,0 pour
+la persistance, et le test échoue. Tous les autres tests restent au vert.
+
+### La sécurité de la CI
+
+- **Actions épinglées par SHA** : `actions/checkout@3d3c42e…  # v7.0.1` plutôt que
+  `@v7`. Un tag peut être déplacé vers du code malveillant, pas un SHA.
+- **`permissions: contents: read`** : le workflow peut lire le dépôt, pas le modifier.
+- **gitleaks vérifié** : le binaire est téléchargé, puis comparé à son empreinte SHA-256
+  officielle avant d'être exécuté.
+- **`.gitleaksignore`** : une seule exception, justifiée dans le fichier : un faux mot de
+  passe d'exemple (`unMotDePasseLong123`) dans un ancien commit de `docs/tp4_mlflow.md`.
+  L'exemple est maintenant `...`, mais l'ancien commit reste dans l'historique.
+
+### Lancer les mêmes vérifications en local
+
+```bash
+ruff check . && ruff format --check . && pytest
+```
+
+Si `ruff format --check` échoue, `ruff format .` corrige la mise en forme tout seul.
+
+### Voir le résultat
+
+Sur GitHub, onglet **Actions** du dépôt : une ligne par push, verte ou rouge. Cliquer dessus
+montre les trois jobs et le détail de chaque étape.
+
 ## En cas de problème
 
 ```bash

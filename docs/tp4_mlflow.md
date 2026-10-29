@@ -22,7 +22,7 @@ base ni au disque : le serveur reçoit les fichiers et les range dans le volume
 1. Ajouter le mot de passe de la base dans le fichier `.env` (jamais commité) :
 
    ```
-   MLFLOW_DB_PASSWORD=unMotDePasseLong123
+   MLFLOW_DB_PASSWORD=...   # à choisir : lettres et chiffres, jamais commité
    MLFLOW_PORT=5001
    ```
 

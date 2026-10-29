@@ -28,6 +28,7 @@ CREATE TABLE IF NOT EXISTS predictions (
 )
 """
 
+
 def database_configured() -> bool:
     return bool(os.getenv("DATABASE_URL") or os.getenv("PGHOST"))
 

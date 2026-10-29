@@ -118,7 +118,5 @@ def _predict(request: PredictionRequest) -> PredictionResponse:
             save_prediction(request, response)
         except psycopg.Error as error:
             logger.exception("Échec de l'enregistrement de la prédiction")
-            raise HTTPException(
-                status_code=503, detail="Enregistrement en base indisponible"
-            ) from error
+            raise HTTPException(status_code=503, detail="Enregistrement en base indisponible") from error
     return response
