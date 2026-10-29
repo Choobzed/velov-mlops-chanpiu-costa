@@ -69,6 +69,11 @@ base ni au disque : le serveur reçoit les fichiers et les range dans le volume
   header`) les requêtes dont l'en-tête `Host` n'est pas autorisé, pour bloquer les attaques
   par DNS rebinding. Sont acceptés : `localhost`, les adresses privées de l'école
   (`192.168.*`, `10.*`) et le nom du service `mlflow`.
+- **`--cors-allowed-origins`** : depuis MLflow 3.5, le serveur refuse aussi (erreur 403,
+  `Blocked cross-origin request`) les requêtes POST venues d'une page web d'une autre adresse
+  que `localhost`. Or l'interface web elle-même, ouverte sur `http://192.168.1.232:5000`, est
+  « une autre adresse » : sans cette option, la liste des runs affiche `INTERNAL_ERROR`
+  (constaté sur la VM). Les adresses privées de l'école sont donc autorisées.
 - **Télémétrie désactivée** (`MLFLOW_DISABLE_TELEMETRY`) : rien ne sort du réseau de l'école.
 - **Utilisateur non-root**, comme l'image de l'API.
 - **Limite connue** : le serveur n'a pas d'authentification. Toute personne sur le réseau de
