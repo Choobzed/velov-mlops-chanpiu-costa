@@ -17,6 +17,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import time
 from contextlib import asynccontextmanager
 from datetime import timedelta
 from pathlib import Path
@@ -25,7 +26,7 @@ from typing import Any
 import joblib
 import pandas as pd
 import psycopg
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 
 from velov.api.database import (
     check_database_connection,
@@ -74,6 +75,19 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Vélo'v availability API", version="1.0.0", lifespan=lifespan)
+
+
+@app.middleware("http")
+async def add_process_time(request: Request, call_next):
+    """Ajoute à chaque réponse le temps passé DANS l'API, en millisecondes (TP5).
+
+    Comparé à la latence vue par le client (Locust), il sépare le temps de notre code du reste :
+    serveur HTTP, réseau et, quand l'API sature, attente dans la file.
+    """
+    start = time.perf_counter()
+    response = await call_next(request)
+    response.headers["X-Process-Time-Ms"] = f"{(time.perf_counter() - start) * 1000:.2f}"
+    return response
 
 
 @app.get("/health")

@@ -90,3 +90,9 @@ def test_predict_is_persisted_when_database_is_configured(client, valid_payload,
     assert len(persisted) == 1
     assert persisted[0][0].station_id == valid_payload["station_id"]
     assert persisted[0][1].model_version == r.json()["model_version"]
+
+
+def test_responses_carry_process_time(client, valid_payload):
+    """TP5 : chaque réponse indique le temps passé dans l'API (en-tête X-Process-Time-Ms)."""
+    for r in (client.get("/health"), client.post("/v1/predict", json=valid_payload)):
+        assert float(r.headers["X-Process-Time-Ms"]) >= 0
