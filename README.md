@@ -122,7 +122,7 @@ Docker, et Locust utilise les cœurs restants.
 | Limite CPU de l'API | 1 cœur (`docker update --cpus 1`) ; PostgreSQL démarré avec l'API |
 | Image de l'API | `velov-api:latest` (python:3.12-slim, scikit-learn 1.9.1), modèle `0.1.0` |
 | Générateur de charge | Locust 2.47.0, scénario `loadtest/locustfile.py` (réflexion de 0,5 à 1,5 s) |
-| Commit mesuré | `ec29ca8` (branche `tp5`) |
+| Commit mesuré | `ec29ca8` pour le premier essai, `d0047de` pour les paliers (même code de l'API) |
 | Date | 17 novembre 2026, 11 h 58 (heure de Paris) |
 | Conditions | Poste sur secteur, navigateur et IDE lourds fermés ; aucun serveur MLflow local (il tourne sur la VM) |
 | Route mesurée | `POST /v1/predict` seule (la ligne `Aggregated` de Locust mélange `/health`) |
@@ -152,6 +152,86 @@ Lecture :
   confondues. À 10 usagers, c'est la réflexion des usagers qui limite le débit, pas l'API.
 - **p95 de 40 ms**, loin du SLO de 200 ms : l'API n'est pas encore chargée. La saturation se
   cherche avec les paliers de l'étape 2.
+
+### Étape 2 : courbe de saturation, 1 worker sur 1 cœur
+
+```bash
+./loadtest/paliers.sh http://localhost:8000 w1      # échauffement 1 min, puis 5 paliers de 2 min
+python loadtest/summary.py results/w1 --markdown
+```
+
+Mesure du 17 novembre 2026 à 12 h 11 (heure de Paris), commit `d0047de`. Fichiers bruts dans
+`results/w1/` (dont `protocole.txt`, écrit par `paliers.sh`).
+
+| Usagers | Requêtes | Erreurs % | Débit (req/s) | p50 (ms) | p95 (ms) | p99 (ms) | SLO p95 |
+|---|---|---|---|---|---|---|---|
+| 10 | 1 047 | 0,0 | 8,8 | 24 | 38 | 49 | ok |
+| 25 | 2 644 | 0,0 | 22,1 | 16 | 38 | 53 | ok |
+| 50 | 5 242 | 0,0 | 43,9 | 14 | 32 | 93 | ok |
+| 100 | 10 383 | 0,0 | 87,0 | 15 | 150 | 260 | ok |
+| 150 | 11 161 | 0,0 | 93,6 | 480 | 760 | 930 | **KO** |
+
+Le p99 est peu fiable sous 10 000 requêtes (paliers 10, 25 et 50) : trop peu de requêtes lentes
+pour l'estimer.
+
+![Courbe de saturation, 1 worker sur 1 cœur](docs/perf/saturation_w1.png)
+
+Lecture :
+- **Jusqu'à 100 usagers, l'API suit** : le débit monte avec les usagers, presque exactement
+  comme le prévoit la loi de Little (100 usagers / environ 1 s par cycle, soit au plus 90 req/s de
+  prédictions), et le p95 reste sous le SLO.
+- **À 150 usagers, le débit plafonne** : +50 % d'usagers ne donnent que +8 % de débit
+  (87 à 93,6 req/s ; le palier 125 de la seconde mesure atteint 98,3 req/s). Les requêtes en trop attendent leur tour : le p50 passe de 15 à 480 ms et le
+  p95 de 150 à 760 ms. C'est le coude de la courbe.
+- **Le p50 baisse quand la charge monte** (24 ms à 10 usagers, 14 ms à 50) : à faible charge,
+  macOS laisse le cœur à basse fréquence ou sur un cœur économe de l'Apple M3 ; sous charge, il
+  passe à pleine vitesse. C'est la limite de mesure notée dans le protocole.
+- **Comparaison avec le repère du cours** (environ 41 req/s sous le SLO sur un cœur) : notre
+  capacité est environ deux fois plus élevée, ce qui correspond à un cœur d'Apple M3 plus rapide
+  que celui de la machine de préparation. L'ordre de grandeur est cohérent.
+- La courbe ajoute le palier 125 de la seconde mesure (w1b) pour mieux situer le coude.
+
+#### Seconde mesure autour du coude (w1b)
+
+```bash
+PALIERS="100 125 150" ./loadtest/paliers.sh http://localhost:8000 w1b
+```
+
+| Usagers | Requêtes | Erreurs % | Débit (req/s) | p50 (ms) | p95 (ms) | p99 (ms) | SLO p95 |
+|---|---|---|---|---|---|---|---|
+| 100 | 10 387 | 0,0 | 87,1 | 15 | 100 | 240 | ok |
+| 125 | 11 715 | 0,0 | 98,3 | 110 | 410 | 580 | **KO** |
+| 150 | 11 130 | 0,0 | 93,3 | 470 | 750 | 970 | **KO** |
+
+Reproductibilité, première mesure contre seconde :
+- **Débit** : 87,0 contre 87,1 req/s à 100 usagers, 93,6 contre 93,3 à 150. Écart inférieur à
+  1 % : la mesure est stable, le poste ne faisait rien d'autre.
+- **p95 à 100 usagers** : 150 contre 100 ms. L'écart dépasse 20 %, mais ce n'est pas du bruit
+  de mesure : ce palier est au bord du coude (l'API y tourne à environ 90 % de son plafond), là
+  où la file d'attente se forme ou non selon de petites variations. Près de la saturation, la
+  latence devient très sensible ; le débit, lui, ne bouge pas. À 150 usagers, loin dans la
+  saturation, le p95 est de nouveau stable (760 contre 750 ms).
+
+CPU pendant le palier 150 (`docker stats --no-stream` et `ps aux`) :
+
+| Processus | CPU | Lecture |
+|---|---|---|
+| API (`velov-mlops-student-api-1`) | 102,7 % | Son unique cœur est plein : c'est elle le goulot |
+| PostgreSQL (`db-1`) | 22,8 % | Écrit chaque prédiction ; non borné, il n'est pas limitant |
+| Locust | 8,6 % | Très loin des 90 % : le générateur de charge n'est pas limitant |
+| Mémoire de l'API | 157,5 Mio | Pour 1 worker (à comparer à 2 workers, étape 4) |
+
+#### Conclusion de l'étape 2
+
+- **Capacité sous le SLO : environ 87 req/s**, atteinte à 100 usagers (p95 entre 100 et 150 ms).
+- **Le SLO casse entre 100 et 125 usagers** : p95 à 410 ms dès 125 usagers.
+- **Plafond de l'API : environ 95 req/s** (93 à 98 selon les paliers). Au-delà, ajouter des
+  usagers n'augmente plus le débit, seulement l'attente.
+- **Le facteur limitant est le CPU de l'API** (102,7 % de son cœur), ni Locust (8,6 %), ni la
+  base. Pour aller plus loin, il faut plus de CPU pour l'API (étape 4) ou moins de calcul par
+  requête (étape 3).
+- **En exploitation**, on ne vise pas 87 req/s : à 90 % du plafond, la latence varie du simple
+  au double d'une mesure à l'autre. Une marge (alerte vers 70 req/s) est reprise dans le runbook.
 
 ## Usage de l'IA générative
 
