@@ -1,0 +1,8 @@
+# TP5, étape 4 : une seule modification par rapport à compose.yaml, le nombre de workers.
+# S'ajoute PAR-DESSUS compose.yaml (Compose fusionne les deux fichiers) :
+#   docker compose -f compose.yaml -f compose.workers.yaml up -d api
+#   docker update --cpus 2 $(docker compose ps -q api)
+# Chaque worker est un processus séparé, avec sa propre copie du modèle en mémoire.
+services:
+  api:
+    command: ["uvicorn", "velov.api.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "2"]

@@ -1,0 +1,21 @@
+[2026-11-17 14:33:26,640] MacBook-Air-de-Esteban/INFO/locust.main: Starting Locust 2.47.0
+[2026-11-17 14:33:26,642] MacBook-Air-de-Esteban/INFO/locust.main: Run time limit set to 120 seconds
+[2026-11-17 14:33:26,642] MacBook-Air-de-Esteban/INFO/locust.runners: Ramping to 100 users at a rate of 20.00 per second
+[2026-11-17 14:33:30,649] MacBook-Air-de-Esteban/INFO/locust.runners: All users spawned: {"AppUser": 100} (100 total users)
+[2026-11-17 14:35:26,498] MacBook-Air-de-Esteban/INFO/locust.main: --run-time limit reached, shutting down
+[2026-11-17 14:35:26,533] MacBook-Air-de-Esteban/INFO/locust.main: Shutting down (exit code 0)
+Type     Name                                                                          # reqs      # fails |    Avg     Min     Max    Med |   req/s  failures/s
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+GET      /health                                                                          954     0(0.00%) |      2       0      65      2 |    7.96        0.00
+POST     /v1/predict                                                                    10621     0(0.00%) |     20       7     443     16 |   88.59        0.00
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+         Aggregated                                                                     11575     0(0.00%) |     19       0     443     15 |   96.55        0.00
+
+Response time percentiles (approximated)
+Type     Name                                                                                  50%    66%    75%    80%    90%    95%    98%    99%  99.9% 99.99%   100% # reqs
+--------|--------------------------------------------------------------------------------|--------|------|------|------|------|------|------|------|------|------|------|------
+GET      /health                                                                                 2      2      3      3      5      6     10     23     65     65     65    954
+POST     /v1/predict                                                                            16     20     22     24     32     41     59    110    380    440    440  10621
+--------|--------------------------------------------------------------------------------|--------|------|------|------|------|------|------|------|------|------|------|------
+         Aggregated                                                                             15     19     21     23     31     40     57    100    380    440    440  11575
+

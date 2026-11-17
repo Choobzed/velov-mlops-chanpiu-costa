@@ -1,0 +1,7 @@
+date_utc=2026-11-17T13:26:24Z
+host=http://localhost:8000
+paliers=10 25 50 100 150 200 250 duree=2m warmup=1m
+commit=4e56cda
+poste_coeurs=8
+locust=locust 2.47.0 from /Users/estebancosta/Desktop/cours/ynov20262027/iacloud/velov-mlops-student/.venv/lib/python3.12/site-packages/locust (Python 3.12.12)
+model={"status":"ready","model_version":"0.1.0"}
