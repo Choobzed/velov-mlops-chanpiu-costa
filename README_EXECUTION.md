@@ -581,6 +581,7 @@ Si le nouveau champion pose problème, on remet l'alias sur l'ancien, depuis Pyt
 
 ```python
 import mlflow
+
 client = mlflow.MlflowClient()
 ancien = client.get_model_version_by_alias("velov-availability", "previous-champion").version
 client.set_registered_model_alias("velov-availability", "champion", ancien)
