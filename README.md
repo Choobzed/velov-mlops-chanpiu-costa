@@ -103,6 +103,56 @@ docs/              templates : model card, runbook, ADR
 exercices/         démo pickle (S1)
 ```
 
+## Performance (TP5)
+
+> Mesures réalisées par le binôme. Rédaction de cette section et du protocole avec l'aide d'une
+> IA (Claude, Anthropic) ; les chiffres viennent de nos propres exécutions de Locust.
+
+### Protocole de mesure
+
+La VM de l'école étant indisponible, **la mesure est locale** : l'API et Locust tournent sur le
+même poste. Pour qu'ils ne se disputent pas le processeur, l'API est bornée à **un cœur** par
+Docker, et Locust utilise les cœurs restants.
+
+| Élément | Valeur |
+|---|---|
+| Type de mesure | Locale (API et Locust sur le même poste) |
+| Poste | MacBook Air, 8 cœurs (`os.cpu_count()`), Apple M3 |
+| Docker | Docker Desktop, moteur 29.6.1 |
+| Limite CPU de l'API | 1 cœur (`docker update --cpus 1`) ; PostgreSQL démarré avec l'API |
+| Image de l'API | `velov-api:latest` (python:3.12-slim, scikit-learn 1.9.1), modèle `0.1.0` |
+| Générateur de charge | Locust 2.47.0, scénario `loadtest/locustfile.py` (réflexion de 0,5 à 1,5 s) |
+| Commit mesuré | `ec29ca8` (branche `tp5`) |
+| Date | 17 novembre 2026, 11 h 58 (heure de Paris) |
+| Conditions | Poste sur secteur, navigateur et IDE lourds fermés ; aucun serveur MLflow local (il tourne sur la VM) |
+| Route mesurée | `POST /v1/predict` seule (la ligne `Aggregated` de Locust mélange `/health`) |
+
+Limite connue : l'Apple M3 mélange 4 cœurs rapides (performance) et 4 cœurs économes
+(efficacité), et c'est macOS qui choisit lesquels donner à la machine virtuelle de Docker. Le
+cœur de l'API n'est donc pas toujours le même, ce qui peut faire varier les mesures : le palier du
+coude est mesuré deux fois (un écart de plus de 20 % invaliderait la mesure).
+
+Vérifications avant la mesure : `/ready` répond `200 OK`, avec l'en-tête
+`x-process-time-ms: 11.95` (temps passé dans l'API pour cette requête).
+
+### Premier essai : 10 usagers, 1 minute
+
+```bash
+locust -f loadtest/locustfile.py --host http://localhost:8000 --headless -u 10 -r 10 -t 1m --only-summary
+```
+
+| Route | Requêtes | Erreurs | Débit (req/s) | p50 (ms) | p95 (ms) | p99 (ms) | Max (ms) |
+|---|---|---|---|---|---|---|---|
+| `POST /v1/predict` | 530 | 0 (0 %) | 9,07 | 25 | 40 | 110 | 150 |
+
+Lecture :
+- **0 % d'erreurs** : le scénario respecte le contrat de l'API.
+- **Le débit est cohérent avec la loi de Little** : 10 usagers / (1 s de réflexion moyenne +
+  0,026 s de réponse) donnent au plus 9,7 req/s, et Locust mesure 9,85 req/s toutes routes
+  confondues. À 10 usagers, c'est la réflexion des usagers qui limite le débit, pas l'API.
+- **p95 de 40 ms**, loin du SLO de 200 ms : l'API n'est pas encore chargée. La saturation se
+  cherche avec les paliers de l'étape 2.
+
 ## Usage de l'IA générative
 
 Chaque activité indique son mode : **sans IA**, **IA déclarée** ou **IA imposée**.
