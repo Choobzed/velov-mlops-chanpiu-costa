@@ -22,6 +22,28 @@
 | Le modèle est chargé | `curl -s http://<hôte>:8000/ready` | HTTP 200 + version |
 | | | |
 
+### Vérifier le proxy HTTPS (TP6)
+
+Depuis le TP6, l'API n'est plus joignable directement : tout passe par le proxy Nginx
+(`docker/nginx/velov.conf`), en HTTPS sur le port 443, avec un certificat auto-signé.
+Le client doit présenter ce certificat (`--cacert certs/velov.crt`) ; la clé `certs/velov.key`
+ne quitte jamais la machine qui sert l'API.
+
+`VM` vaut l'adresse de la VM (`192.168.1.232`), ou `127.0.0.1` pour un essai local (certificat
+créé avec `./scripts/make_cert.sh 127.0.0.1`).
+
+| Appel | Résultat attendu | Ce que ça prouve |
+|---|---|---|
+| `curl -s -o /dev/null -w "%{http_code}\n" http://$VM/health` | `301` | Le HTTP en clair est redirigé vers HTTPS |
+| `curl -s https://$VM/health; echo $?` | `60` (code de sortie de curl) | Sans le certificat, curl refuse un serveur qu'il ne peut pas vérifier |
+| `curl -s -o /dev/null -w "%{http_code}\n" --cacert certs/velov.crt https://$VM/health` | `200` | HTTPS fonctionne, le proxy joint l'API |
+| `curl -s -o /dev/null -w "%{http_code}\n" --cacert certs/velov.crt https://$VM/metrics` | `404` | Les métriques ne sortent pas : seul Prometheus les lit, dans le réseau Docker |
+| `docker compose stop api`, puis le même appel que pour `200` | `502` | Proxy debout, API absente : « Bad Gateway ». Relancer avec `docker compose start api` |
+| `curl -s -m 3 http://$VM:8000/health; echo $?` | code non nul (`7` : connexion refusée) | Le port 8000 n'est plus publié : on ne contourne plus le proxy |
+
+Lecture d'un `502` en incident : le proxy fonctionne mais n'atteint pas l'API (conteneur arrêté,
+en redémarrage ou planté). Regarder `docker compose ps` et `docker compose logs api`.
+
 ## 4. Incidents connus
 | Symptôme | Cause probable | Diagnostic | Action |
 |---|---|---|---|

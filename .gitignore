@@ -28,3 +28,7 @@ dbt/.user.yml
 # macOS
 .DS_Store
 **/.DS_Store
+
+# S6 : certificat TLS (la clé ne quitte jamais la machine) et rapports Evidently
+certs/
+reports/
