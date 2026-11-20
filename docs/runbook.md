@@ -178,3 +178,35 @@ docker compose restart prometheus                                               
 Page **Targets** : `velov-api` doit être **UP**. Si elle est **DOWN** avec une erreur 404, l'image
 de l'API n'a pas été reconstruite avec l'instrumentateur (`docker compose up -d --build api`) ;
 avec « connection refused », l'API ne tourne pas.
+
+### Tableau de bord Grafana
+
+Grafana : `http://<hôte>:3000`, compte `admin`, mot de passe `GRAFANA_ADMIN_PASSWORD` du `.env`.
+Le tableau **Vélo'v · API** est dans le dossier **Velov**. Il n'est pas créé à la main : il est
+décrit dans `docker/grafana/dashboards/velov.json` et chargé au démarrage de Grafana
+(`docker/grafana/provisioning/dashboards/velov.yml`). Il survit donc à la perte du volume
+`grafanadata` ou à une VM recréée (dashboards as code).
+
+| Panneau | Requête | Lecture |
+|---|---|---|
+| Débit par route | `sum by (handler) (rate(http_requests_total{handler=~"/v1/.*"}[1m]))` | Requêtes par seconde de chaque route |
+| Part des réponses 5xx | `(sum(rate(http_requests_total{status="5xx"}[5m])) or vector(0)) / sum(rate(http_requests_total[5m]))` | Zone rouge au-dessus de 1 % (seuil de `Erreurs5xx`) |
+| SLI de latence | `velov:latence_sli:ratio_rate5m` | Axe de 80 à 100 %, ligne à 95 % (le SLO) |
+| Modèle servi | `velov_model_info`, légende `{{model_version}}` | La version du modèle en service |
+
+Le `or vector(0)` du panneau 5xx : tant qu'aucune erreur 5xx n'a eu lieu, la série
+`status="5xx"` n'existe pas, et la division ne renvoie rien (« No data »), ce qu'on pourrait
+prendre pour une panne de la supervision. Avec `or vector(0)`, le panneau affiche 0 %.
+
+Modifier le tableau : le changer dans Grafana, puis **Export > Export as JSON** (option
+« Export for sharing externally » **désactivée**, pour garder l'uid `prometheus` de la source),
+remplacer `velov.json`, commiter, et `docker compose restart grafana` sur la VM.
+
+Vérifier qu'il revient après la perte du volume (ne pas toucher au volume de la base) :
+
+```bash
+docker compose rm -sf grafana
+docker volume ls | grep grafanadata          # nom exact du volume
+docker volume rm <projet>_grafanadata
+docker compose up -d grafana                 # le tableau réapparaît dans le dossier Velov
+```
