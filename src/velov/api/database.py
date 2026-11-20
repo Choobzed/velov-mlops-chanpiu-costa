@@ -66,24 +66,33 @@ def check_database_connection() -> bool:
     return True
 
 
+INSERT_PREDICTION = """
+INSERT INTO predictions (
+    station_id, observation_timestamp, target_timestamp, capacity,
+    bikes_available, temperature, is_raining, predicted_bikes, model_version
+) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+"""
+
+
+def _row(request: PredictionRequest, response: PredictionResponse) -> tuple:
+    return (
+        request.station_id,
+        request.timestamp,
+        response.target_timestamp,
+        request.capacity,
+        request.bikes_available,
+        request.temperature,
+        request.is_raining,
+        response.predicted_bikes,
+        response.model_version,
+    )
+
+
 def save_prediction(request: PredictionRequest, response: PredictionResponse) -> None:
-    with _connect() as connection:
-        connection.execute(
-            """
-            INSERT INTO predictions (
-                station_id, observation_timestamp, target_timestamp, capacity,
-                bikes_available, temperature, is_raining, predicted_bikes, model_version
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-            """,
-            (
-                request.station_id,
-                request.timestamp,
-                response.target_timestamp,
-                request.capacity,
-                request.bikes_available,
-                request.temperature,
-                request.is_raining,
-                response.predicted_bikes,
-                response.model_version,
-            ),
-        )
+    save_predictions([request], [response])
+
+
+def save_predictions(requests: list[PredictionRequest], responses: list[PredictionResponse]) -> None:
+    """Enregistre un lot de prédictions avec une seule connexion et une seule transaction (TP6)."""
+    with _connect() as connection, connection.cursor() as cursor:
+        cursor.executemany(INSERT_PREDICTION, [_row(r, p) for r, p in zip(requests, responses, strict=True)])

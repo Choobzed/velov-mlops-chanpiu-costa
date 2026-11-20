@@ -82,7 +82,10 @@ def test_predict_is_persisted_when_database_is_configured(client, valid_payload,
 
     persisted = []
     monkeypatch.setenv("PGHOST", "db")
-    monkeypatch.setattr(main, "save_prediction", lambda request, response: persisted.append((request, response)))
+    # TP6 : l'API enregistre par lots (save_predictions), même pour une seule prédiction.
+    monkeypatch.setattr(
+        main, "save_predictions", lambda requests, responses: persisted.extend(zip(requests, responses, strict=True))
+    )
 
     r = client.post("/v1/predict", json=valid_payload)
 
@@ -105,3 +108,26 @@ def test_metrics_expose_model_and_latency_buckets(client, valid_payload):
     assert 'velov_model_info{model_version="0.0.0-test"} 1.0' in body
     assert 'http_request_duration_seconds_bucket{handler="/v1/predict",le="0.2",method="POST"}' in body
     assert 'http_requests_total{handler="/v1/predict",method="POST",status="2xx"}' in body
+
+
+def test_predict_batch_matches_single_predictions(client, valid_payload):
+    """TP6 : le lot donne les mêmes prédictions que les appels un par un."""
+    other = {**valid_payload, "station_id": 3, "bikes_available": 2}
+    batch = client.post("/v1/predict/batch", json={"items": [valid_payload, other]})
+    assert batch.status_code == 200
+    singles = [client.post("/v1/predict", json=p).json() for p in (valid_payload, other)]
+    assert batch.json()["predictions"] == singles
+
+
+def test_predict_batch_rejects_empty_or_invalid_items(client, valid_payload):
+    assert client.post("/v1/predict/batch", json={"items": []}).status_code == 422
+    bad = {**valid_payload, "bikes_available": 25}  # plus de vélos que de bornes
+    assert client.post("/v1/predict/batch", json={"items": [valid_payload, bad]}).status_code == 422
+
+
+def test_model_info_gives_training_data(client):
+    """TP6 : /v1/model dit quelles données ont entraîné le modèle (pour replay et monitor)."""
+    body = client.get("/v1/model").json()
+    assert body["model_version"] == "0.0.0-test"
+    assert body["data"]["path"].endswith("history.csv")
+    assert len(body["data"]["sha256"]) == 64

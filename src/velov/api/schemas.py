@@ -47,3 +47,15 @@ class PredictionResponse(BaseModel):
     target_timestamp: AwareDatetime = Field(..., description="Instant prédit (t + 1 h)")
     predicted_bikes: float = Field(..., ge=0)
     model_version: str
+
+
+# TP6 (IA déclarée) : prédictions par lot, utilisées par velov.replay pour rejouer une semaine
+# (toutes les stations d'une heure en un seul appel).
+class BatchPredictionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    items: list[PredictionRequest] = Field(..., min_length=1, max_length=1000)
+
+
+class BatchPredictionResponse(BaseModel):
+    predictions: list[PredictionResponse]

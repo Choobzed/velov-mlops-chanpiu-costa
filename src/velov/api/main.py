@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Any
 
 import joblib
+import numpy as np
 import pandas as pd
 import psycopg
 from fastapi import FastAPI, HTTPException, Request
@@ -34,9 +35,14 @@ from velov.api.database import (
     check_database_connection,
     database_configured,
     initialize_database,
-    save_prediction,
+    save_predictions,
 )
-from velov.api.schemas import PredictionRequest, PredictionResponse
+from velov.api.schemas import (
+    BatchPredictionRequest,
+    BatchPredictionResponse,
+    PredictionRequest,
+    PredictionResponse,
+)
 from velov.features import FEATURES, add_features
 from velov.train import METADATA_FILENAME, sha256_of
 
@@ -122,33 +128,52 @@ def ready() -> dict[str, str]:
     return {"status": "ready", "model_version": STATE["metadata"]["model_version"]}
 
 
+@app.get("/v1/model")
+def model_info() -> dict[str, Any]:
+    """Les métadonnées du modèle servi (TP6). `data.path` désigne les données qui l'ont entraîné :
+    velov.replay et velov.monitor doivent utiliser les mêmes."""
+    metadata = STATE["metadata"]
+    if metadata is None:
+        raise HTTPException(status_code=503, detail="Modèle indisponible")
+    return {**metadata, "data": {"path": metadata.get("data_source"), "sha256": metadata.get("data_sha256")}}
+
+
 @app.post("/v1/predict", response_model=PredictionResponse)
 def predict(request: PredictionRequest) -> PredictionResponse:
-    return _predict(request)
+    return _predict([request])[0]
 
 
-def _predict(request: PredictionRequest) -> PredictionResponse:
+@app.post("/v1/predict/batch", response_model=BatchPredictionResponse)
+def predict_batch(batch: BatchPredictionRequest) -> BatchPredictionResponse:
+    """Plusieurs stations en un appel (TP6, utilisé par velov.replay). Un seul model.predict pour
+    tout le lot : le coût fixe mesuré au TP5 n'est payé qu'une fois."""
+    return BatchPredictionResponse(predictions=_predict(batch.items))
+
+
+def _predict(requests: list[PredictionRequest]) -> list[PredictionResponse]:
     model = STATE["model"]
     metadata = STATE["metadata"]
     if model is None or metadata is None:
         raise HTTPException(status_code=503, detail="Modèle indisponible")
 
-    frame = pd.DataFrame([request.model_dump()])
+    frame = pd.DataFrame([request.model_dump() for request in requests])
     frame["timestamp"] = pd.to_datetime(frame["timestamp"], utc=True)
     features = add_features(frame)[FEATURES]
-    raw_prediction = float(model.predict(features)[0])
-    prediction = min(max(raw_prediction, 0.0), float(request.capacity))
-    response = PredictionResponse(
-        station_id=request.station_id,
-        target_timestamp=request.timestamp + timedelta(hours=1),
-        predicted_bikes=prediction,
-        model_version=metadata["model_version"],
-    )
+    predictions = np.clip(model.predict(features), 0, frame["capacity"].to_numpy(dtype=float))
+    responses = [
+        PredictionResponse(
+            station_id=request.station_id,
+            target_timestamp=request.timestamp + timedelta(hours=1),
+            predicted_bikes=float(prediction),
+            model_version=metadata["model_version"],
+        )
+        for request, prediction in zip(requests, predictions, strict=True)
+    ]
 
     if database_configured():
         try:
-            save_prediction(request, response)
+            save_predictions(requests, responses)
         except psycopg.Error as error:
-            logger.exception("Échec de l'enregistrement de la prédiction")
+            logger.exception("Échec de l'enregistrement des prédictions")
             raise HTTPException(status_code=503, detail="Enregistrement en base indisponible") from error
-    return response
+    return responses
