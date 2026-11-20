@@ -96,3 +96,12 @@ def test_responses_carry_process_time(client, valid_payload):
     """TP5 : chaque réponse indique le temps passé dans l'API (en-tête X-Process-Time-Ms)."""
     for r in (client.get("/health"), client.post("/v1/predict", json=valid_payload)):
         assert float(r.headers["X-Process-Time-Ms"]) >= 0
+
+
+def test_metrics_expose_model_and_latency_buckets(client, valid_payload):
+    """TP6 : /metrics publie le modèle servi et un seau à 0,2 s pour /v1/predict (le SLO)."""
+    client.post("/v1/predict", json=valid_payload)
+    body = client.get("/metrics").text
+    assert 'velov_model_info{model_version="0.0.0-test"} 1.0' in body
+    assert 'http_request_duration_seconds_bucket{handler="/v1/predict",le="0.2",method="POST"}' in body
+    assert 'http_requests_total{handler="/v1/predict",method="POST",status="2xx"}' in body

@@ -9,3 +9,5 @@ pandas==3.0.2
 numpy==2.4.6
 joblib==1.5.3
 psycopg[binary]==3.2.9
+# S6 : métriques Prometheus de l'API (/metrics)
+prometheus-fastapi-instrumentator==8.1.0

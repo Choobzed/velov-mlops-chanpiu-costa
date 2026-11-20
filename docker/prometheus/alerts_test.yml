@@ -1,0 +1,78 @@
+# Tests unitaires des règles d'alerte (S6), sans API ni trafic réel : on fabrique des séries,
+# et promtool vérifie quelles alertes se déclenchent, et quand.
+#   docker compose exec prometheus promtool test rules /etc/prometheus/alerts_test.yml
+rule_files:
+  - alerts.yml
+
+evaluation_interval: 15s
+
+tests:
+  # 90 % des prédictions sous 200 ms : SLO non tenu. Pending d'abord, firing après 5 min.
+  - interval: 15s
+    input_series:
+      - series: 'http_request_duration_seconds_bucket{handler="/v1/predict", le="0.2"}'
+        values: "0+90x80"
+      - series: 'http_request_duration_seconds_count{handler="/v1/predict"}'
+        values: "0+100x80"
+    alert_rule_test:
+      - alertname: LatenceHorsSLO
+        eval_time: 3m
+        exp_alerts: []
+      - alertname: LatenceHorsSLO
+        eval_time: 10m
+        exp_alerts:
+          - exp_labels: {severity: ticket}
+            exp_annotations:
+              summary: "SLO de latence non tenu : 90% des /v1/predict sous 200 ms (objectif 95 %)"
+              runbook: "docs/runbook.md, section 7 : comparer X-Process-Time-Ms et la latence client, puis docker stats"
+
+  # 99 % sous 200 ms : SLO tenu, pas d'alerte.
+  - interval: 15s
+    input_series:
+      - series: 'http_request_duration_seconds_bucket{handler="/v1/predict", le="0.2"}'
+        values: "0+99x80"
+      - series: 'http_request_duration_seconds_count{handler="/v1/predict"}'
+        values: "0+100x80"
+    alert_rule_test:
+      - alertname: LatenceHorsSLO
+        eval_time: 15m
+        exp_alerts: []
+
+  # 2 % de 5xx : Erreurs5xx se déclenche ; 0,5 % : rien.
+  - interval: 15s
+    input_series:
+      - series: 'http_requests_total{handler="/v1/predict", status="5xx"}'
+        values: "0+2x80"
+      - series: 'http_requests_total{handler="/v1/predict", status="2xx"}'
+        values: "0+98x80"
+    alert_rule_test:
+      - alertname: Erreurs5xx
+        eval_time: 10m
+        exp_alerts:
+          - exp_labels: {severity: page}
+            exp_annotations:
+              summary: "2% des /v1/predict en erreur 5xx (seuil : 1 %)"
+              runbook: "docs/runbook.md, section 4 : docker compose logs api, puis /ready"
+  - interval: 15s
+    input_series:
+      - series: 'http_requests_total{handler="/v1/predict", status="5xx"}'
+        values: "0+1x80"
+      - series: 'http_requests_total{handler="/v1/predict", status="2xx"}'
+        values: "0+199x80"
+    alert_rule_test:
+      - alertname: Erreurs5xx
+        eval_time: 10m
+        exp_alerts: []
+
+  # API arrêtée : ApiInjoignable après 1 min.
+  - interval: 15s
+    input_series:
+      - series: 'up{job="velov-api", instance="api:8000"}'
+        values: "0x10"
+    alert_rule_test:
+      - alertname: ApiInjoignable
+        eval_time: 2m
+        exp_alerts:
+          - exp_labels: {severity: page, job: velov-api, instance: "api:8000"}
+            exp_annotations:
+              summary: "Prometheus ne joint plus l'API depuis 1 min"

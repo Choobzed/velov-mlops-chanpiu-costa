@@ -129,3 +129,52 @@ requêtes que de laisser la file grossir.
   base, qui ouvre une connexion PostgreSQL par requête.
 - Remesurer la capacité après tout changement de modèle, de code de l'API ou de machine :
   `./loadtest/paliers.sh http://<hôte>:8000 <prefixe>`, puis `python loadtest/summary.py results/<prefixe>`.
+
+## 8. Métriques et alertes (TP6)
+
+> Rédigé avec l'aide d'une IA (Claude, Anthropic).
+
+L'API publie ses métriques sur `/metrics` (instrumentateur Prometheus, `src/velov/api/main.py`).
+Prometheus les lit toutes les 15 s **depuis le réseau Docker** (`api:8000`) ; le proxy bloque
+`/metrics` depuis l'extérieur (404). Interface de Prometheus : `http://<hôte>:9090`.
+
+### Les métriques utiles
+
+| Métrique | Ce qu'elle compte |
+|---|---|
+| `http_requests_total{handler, method, status}` | Requêtes par route, méthode et famille de statut (`2xx`, `4xx`, `5xx`) |
+| `http_request_duration_seconds_bucket{handler, method, le}` | Durées rangées en seaux : 0,05 / 0,1 / **0,2** / 0,5 / 1 / 2,5 s |
+| `velov_model_info{model_version}` | Vaut 1 ; l'étiquette donne la version du modèle servi |
+| `velov:latence_sli:ratio_rate5m` | SLI calculé par Prometheus : part des `/v1/predict` sous 200 ms sur 5 min |
+
+Le seau à 0,2 s est déclaré dans `main.py` : ceux de l'instrumentateur par défaut (0,1 / 0,5 /
+1 s) ne permettent pas de compter les requêtes sous le seuil du SLO.
+
+### Les alertes (`docker/prometheus/alerts.yml`)
+
+| Alerte | Condition | Gravité | Premières actions |
+|---|---|---|---|
+| `ApiInjoignable` | Prometheus ne lit plus `/metrics` (`up == 0`) depuis 1 min | page | `docker compose ps`, `docker compose logs api` ; vérifier que le conteneur tourne et que `/ready` répond |
+| `LatenceHorsSLO` | SLI sous 0,95 pendant 5 min | ticket | Section 7 : comparer `X-Process-Time-Ms` et la latence client ; `docker stats` pour le CPU |
+| `Erreurs5xx` | Plus de 1 % des `/v1/predict` en 5xx pendant 5 min | page | `docker compose logs api` ; un 503 vient du modèle absent ou de la base injoignable (`/ready`) |
+
+Une alerte passe par trois états, visibles sur la page **Alerts** de Prometheus :
+**inactive** (condition fausse), **pending** (condition vraie, mais pas encore depuis la durée du
+`for`), **firing** (déclenchée). Le `for` évite d'alerter sur un pic isolé. Sans trafic, le SLI n'a
+pas de valeur (0/0) et `LatenceHorsSLO` reste inactive : c'est `ApiInjoignable` qui couvre une
+API arrêtée.
+
+### Vérifier
+
+```bash
+docker compose exec prometheus promtool check rules /etc/prometheus/alerts.yml   # syntaxe
+docker compose exec prometheus promtool test rules /etc/prometheus/alerts_test.yml # comportement
+docker compose restart prometheus                                                # recharger les règles
+```
+
+`alerts_test.yml` fabrique des séries (90 % puis 99 % des requêtes sous 200 ms, 2 % puis 0,5 % de
+5xx, API arrêtée) et vérifie quelles alertes se déclenchent, et quand.
+
+Page **Targets** : `velov-api` doit être **UP**. Si elle est **DOWN** avec une erreur 404, l'image
+de l'API n'a pas été reconstruite avec l'instrumentateur (`docker compose up -d --build api`) ;
+avec « connection refused », l'API ne tourne pas.

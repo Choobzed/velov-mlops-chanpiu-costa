@@ -2,11 +2,25 @@
 #   docker compose exec prometheus promtool check rules /etc/prometheus/alerts.yml
 #   docker compose restart prometheus
 #
-# Fournie : ApiInjoignable. À écrire au TP6, étape 2 (S6 · 15) :
-#   - la règle d'enregistrement velov:latence_sli:ratio_rate5m (part des /v1/predict sous 200 ms) ;
-#   - LatenceHorsSLO (SLI sous 0,95 pendant 5 min) ;
-#   - Erreurs5xx (plus de 1 % de 5xx sur /v1/predict pendant 5 min).
+# SLO de l'API (README, section Performance ; runbook, section 7) :
+#   95 % des POST /v1/predict en moins de 200 ms, et moins de 1 % d'erreurs.
+#
+# Fournie par le cours : ApiInjoignable. Écrites au TP6, étape 2 (IA déclarée : Claude) :
+#   - la règle d'enregistrement velov:latence_sli:ratio_rate5m ;
+#   - LatenceHorsSLO et Erreurs5xx.
 groups:
+  - name: velov-sli
+    rules:
+      # SLI de latence : part des /v1/predict servies en moins de 200 ms, sur 5 minutes glissantes.
+      # Le seau le="0.2" compte les requêtes de 200 ms ou moins (il existe parce que main.py
+      # le déclare : les seaux par défaut de l'instrumentateur sont 0,1 / 0,5 / 1 s).
+      # Calculée une fois toutes les 15 s et enregistrée : alertes et Grafana lisent la même série.
+      - record: velov:latence_sli:ratio_rate5m
+        expr: |
+          sum(rate(http_request_duration_seconds_bucket{handler="/v1/predict", le="0.2"}[5m]))
+          /
+          sum(rate(http_request_duration_seconds_count{handler="/v1/predict"}[5m]))
+
   - name: velov-api
     rules:
       - alert: ApiInjoignable
@@ -15,3 +29,28 @@ groups:
         labels: {severity: page}
         annotations:
           summary: "Prometheus ne joint plus l'API depuis 1 min"
+
+      # Le SLO de latence n'est plus tenu : moins de 95 % des prédictions sous 200 ms.
+      # for: 5m évite d'alerter sur un pic isolé (un rechargement, un échauffement).
+      # Sans trafic, le SLI n'a pas de valeur (0/0) et l'alerte reste inactive : c'est voulu,
+      # ApiInjoignable couvre le cas de l'API arrêtée.
+      - alert: LatenceHorsSLO
+        expr: velov:latence_sli:ratio_rate5m < 0.95
+        for: 5m
+        labels: {severity: ticket}
+        annotations:
+          summary: "SLO de latence non tenu : {{ $value | humanizePercentage }} des /v1/predict sous 200 ms (objectif 95 %)"
+          runbook: "docs/runbook.md, section 7 : comparer X-Process-Time-Ms et la latence client, puis docker stats"
+
+      # Plus de 1 % des /v1/predict en erreur serveur (5xx) : base injoignable (503), modèle absent...
+      - alert: Erreurs5xx
+        expr: |
+          sum(rate(http_requests_total{handler="/v1/predict", status="5xx"}[5m]))
+          /
+          sum(rate(http_requests_total{handler="/v1/predict"}[5m]))
+          > 0.01
+        for: 5m
+        labels: {severity: page}
+        annotations:
+          summary: "{{ $value | humanizePercentage }} des /v1/predict en erreur 5xx (seuil : 1 %)"
+          runbook: "docs/runbook.md, section 4 : docker compose logs api, puis /ready"

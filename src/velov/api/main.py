@@ -27,6 +27,8 @@ import joblib
 import pandas as pd
 import psycopg
 from fastapi import FastAPI, HTTPException, Request
+from prometheus_client import Gauge
+from prometheus_fastapi_instrumentator import Instrumentator
 
 from velov.api.database import (
     check_database_connection,
@@ -42,6 +44,13 @@ logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
 logger = logging.getLogger("velov.api")
 
 STATE: dict[str, Any] = {"model": None, "metadata": None}
+
+# Seaux de latence de http_request_duration_seconds (S6). Ceux de l'instrumentateur par défaut
+# sont 0,1 / 0,5 / 1 s : sans seau à 0,2 s, impossible de compter les requêtes sous le SLO.
+LATENCY_BUCKETS = (0.05, 0.1, 0.2, 0.5, 1.0, 2.5)
+
+# Quel modèle est servi : valeur 1, et la version en étiquette (panneau « Modèle servi »).
+MODEL_INFO = Gauge("velov_model_info", "Modèle servi par l'API (valeur 1)", ["model_version"])
 
 
 def load_model(model_dir: Path) -> tuple[object, dict]:
@@ -63,6 +72,8 @@ async def lifespan(app: FastAPI):
     try:
         STATE["model"], STATE["metadata"] = load_model(model_dir)
         logger.info("Modèle %s chargé", STATE["metadata"]["model_version"])
+        MODEL_INFO.clear()  # une seule version à la fois, même après un rechargement
+        MODEL_INFO.labels(model_version=STATE["metadata"]["model_version"]).set(1)
     except Exception:
         logger.exception("Échec du chargement du modèle depuis %s", model_dir)
     if database_configured():
@@ -75,6 +86,13 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Vélo'v availability API", version="1.0.0", lifespan=lifespan)
+
+# Métriques HTTP (S6) : nombre de requêtes et durées par route, méthode et famille de statut
+# (2xx, 4xx, 5xx), publiées sur /metrics. Le proxy bloque /metrics (404) : seul Prometheus les
+# lit, depuis le réseau Docker (api:8000). /metrics lui-même n'est pas compté.
+Instrumentator(should_group_status_codes=True, excluded_handlers=["/metrics"]).instrument(
+    app, latency_lowr_buckets=LATENCY_BUCKETS
+).expose(app, include_in_schema=False)
 
 
 @app.middleware("http")
